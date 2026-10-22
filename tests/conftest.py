@@ -40,11 +40,14 @@ async def mcp_client(args: list[str], stub: str | None = None):
 
 
 def have_libadalang() -> bool:
+    # find_spec only: importing loads the native library, which on Windows
+    # disturbs the std handles inherited by later subprocesses.
+    import importlib.util
+
     try:
-        import libadalang  # noqa: F401
+        return importlib.util.find_spec("libadalang") is not None
     except Exception:
         return False
-    return True
 
 
 requires_lal = pytest.mark.skipif(not have_libadalang(), reason="libadalang not importable")

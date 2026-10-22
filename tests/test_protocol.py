@@ -45,7 +45,8 @@ def test_bad_cli_args_exit_nonzero():
 
     from conftest import SERVER
 
-    r = subprocess.run([sys.executable, SERVER], capture_output=True, text=True, timeout=60)
+    r = subprocess.run([sys.executable, SERVER], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       timeout=60)
     assert r.returncode != 0
     assert r.stdout == ""  # usage errors go to stderr, never the protocol stream
     assert "--project" in r.stderr

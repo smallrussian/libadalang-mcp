@@ -184,6 +184,10 @@ class Session:
         """AnalysisUnit for a unit name, or None if the project has no such unit part."""
         lal = self.lal
         kind = lal.AnalysisUnitKind.unit_body if body else lal.AnalysisUnitKind.unit_specification
+        # Libadalang maps any string to some file name, so validate here.
+        if not UNIT_NAME_RE.match(name.strip()):
+            raise ToolFailure(f"invalid unit name: {name!r} (expected e.g. Pkg.Child)")
+        name = name.strip()
         try:
             u = self.ctx.get_from_provider(name, kind)
         except lal.InvalidUnitNameError as exc:
