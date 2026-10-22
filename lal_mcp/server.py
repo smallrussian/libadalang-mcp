@@ -36,12 +36,15 @@ INSTRUCTIONS = """\
 Ada code intelligence from Libadalang name resolution over the project's own GPR file.
 VERIFY BEFORE ASSERTING: check a subprogram's signature, a type's components, or who calls
 something with these tools before stating it or editing code that depends on it.
-"unresolved" / "[approximate]" mean unknown: say so, never fill the gap with a guess.
+"unresolved" / "[approximate]" / "[status: INCOMPLETE" mean unknown: stop and report it,
+never fill the gap with a guess or by reading whole files.
 Locations are path:line relative to the workspace; quote declaration text exactly as shown.
 Which tool: file of a unit -> find_unit; files of a package -> package_files;
 what is declared in a unit -> outline (instead of reading the file); what a name at
-file:line:col is -> goto_definition; who uses it -> find_references; anything else ->
-run_lal (check names with api_help, see node shapes with dump).
+file:line:col is -> goto_definition; who uses it -> find_references; what a unit needs to
+link (Import'ed C symbols, owning GPR projects, linker options, missing bodies) -> link_info;
+facts for testing a subprogram (ranges, boundaries, branches, raises, state, doubles) ->
+test_model; anything else -> run_lal (check names with api_help, node shapes with dump).
 run_lal: Python with lal, ctx, prj, unit(name_or_path), units(), rel(node) -> "path:line";
 the value of a final expression is printed. f_xxx = syntax child, p_xxx = semantic property
 (may raise lal.PropertyError; some take arguments, e.g. p_referenced_decl()).

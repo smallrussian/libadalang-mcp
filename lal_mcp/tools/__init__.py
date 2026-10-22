@@ -25,7 +25,7 @@ EXECUTES_CODE = ToolAnnotations(read_only_hint=False, destructive_hint=True, ide
 def register(app: MCPServer, run: Callable[..., Awaitable[CallToolResult]]) -> None:
     """Register every tool on `app`. `await run(ctx, fn, *args)` resolves the project on first use,
     runs fn(session, *args) and caps the result. `ctx` (MCP Context) is injected, not in the schema."""
-    from lal_mcp.tools import navigate, openended, outline as outline_mod, units
+    from lal_mcp.tools import link, navigate, openended, outline as outline_mod, testmodel, units
 
     # Tools are async so they run on the event loop (main) thread: Libadalang
     # is not thread-safe and the run_lal timeout needs the main thread.
@@ -69,6 +69,25 @@ def register(app: MCPServer, run: Callable[..., Awaitable[CallToolResult]]) -> N
     ) -> CallToolResult:
         """List references to the entity named at file:line:column across the project, as path:line: source line."""
         return await run(ctx, navigate.find_references, file, line, column, limit, hint="lower the limit")
+
+    @app.tool(annotations=READ_ONLY)
+    async def link_info(
+        name: UnitName,
+        deps: Annotated[bool, Field(description="Include the unit's whole dependency closure")] = True,
+        ctx: Context | None = None,
+    ) -> CallToolResult:
+        """Build/link facts for a unit: pragma/aspect Import and Export symbols and where they are defined (C/C++ source, library, runtime), owning GPR projects to with, linker options, missing bodies. First line is [status: complete] or [status: INCOMPLETE: ...]."""
+        return await run(ctx, link.link_info, name, deps, hint="pass deps=false for the unit's own files only")
+
+    @app.tool(annotations=READ_ONLY)
+    async def test_model(
+        file: FilePath,
+        line: Line,
+        column: Annotated[int, Field(description="Column of the subprogram name; 0 = the subprogram declared on that line")] = 0,
+        ctx: Context | None = None,
+    ) -> CallToolResult:
+        """Facts for testing one subprogram: parameter types with ranges and boundary values, contracts, branches, raises, returns, global state, callees to double, bit operations. First line is [status: complete] or [status: INCOMPLETE: ...]."""
+        return await run(ctx, testmodel.test_model, file, line, column)
 
     @app.tool(annotations=EXECUTES_CODE)
     async def run_lal(
