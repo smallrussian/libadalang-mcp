@@ -25,7 +25,7 @@ EXECUTES_CODE = ToolAnnotations(read_only_hint=False, destructive_hint=True, ide
 def register(app: MCPServer, run: Callable[..., Awaitable[CallToolResult]]) -> None:
     """Register every tool on `app`. `await run(ctx, fn, *args)` resolves the project on first use,
     runs fn(session, *args) and caps the result. `ctx` (MCP Context) is injected, not in the schema."""
-    from lal_mcp.tools import link, navigate, openended, outline as outline_mod, testmodel, units
+    from lal_mcp.tools import link, navigate, openended, outline as outline_mod, project, testmodel, units
 
     # Tools are async so they run on the event loop (main) thread: Libadalang
     # is not thread-safe and the run_lal timeout needs the main thread.
@@ -88,6 +88,11 @@ def register(app: MCPServer, run: Callable[..., Awaitable[CallToolResult]]) -> N
     ) -> CallToolResult:
         """Facts for testing one subprogram: parameter types with ranges and boundary values, contracts, branches, raises, returns, global state, callees to double, bit operations. First line is [status: complete] or [status: INCOMPLETE: ...]."""
         return await run(ctx, testmodel.test_model, file, line, column)
+
+    @app.tool(annotations=READ_ONLY)
+    async def reload_project(ctx: Context) -> CallToolResult:
+        """Re-read the GPR project and drop cached analysis. Files added or removed and .gpr edits are also detected automatically before each call."""
+        return await run(ctx, project.reload_project)
 
     @app.tool(annotations=EXECUTES_CODE)
     async def run_lal(

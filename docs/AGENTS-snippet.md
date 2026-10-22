@@ -39,6 +39,10 @@ Use the tools instead of reading whole files:
   and bit operations.
 - Anything else: `run_lal`, with a short Libadalang query. Check API names with
   `api_help` and node shapes with `dump` first; don't guess them.
+- New, deleted or renamed source files and `.gpr` edits are picked up
+  automatically: the next answer starts with `[project reloaded: ...]`. If a
+  file you just created is still `unresolved`, call `reload_project` once before
+  treating it as a blocker.
 
 ### Uncertainty gate: stop, don't guess
 

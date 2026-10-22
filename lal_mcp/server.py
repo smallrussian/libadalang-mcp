@@ -131,6 +131,12 @@ def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow th
         if SESSION is None:
             raise ToolFailure("server not configured (no project)")
         SESSION.ensure_loaded()
+        try:  # files added/removed or a .gpr edited since the last call: rebuild the project view
+            refreshed = SESSION.refresh_if_changed()
+        except ToolFailure as exc:
+            refreshed = f"[{exc}]"
+        if refreshed:
+            SESSION.load_note = (SESSION.load_note or "") + refreshed + "\n"
         text, is_error = SESSION.with_retry(lambda: fn(SESSION, *args))
         if SESSION.load_note:
             text, SESSION.load_note = SESSION.load_note + text, None

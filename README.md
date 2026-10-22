@@ -28,6 +28,7 @@ Primary client: OpenAI Codex CLI. Works with any MCP client (Claude Code etc.).
 | `find_references(file, line, column, limit)` | `path:line: source line` for every reference in the project |
 | `link_info(name, deps)` | build/link closure: `pragma Import`/`Export` symbols and the C/C++ source or library defining them, owning GPR projects (`with`s needed), linker options, missing bodies |
 | `test_model(file, line, column)` | facts for testing a subprogram: parameter ranges and boundary values (modular width), contracts, branches, raises, returns, global state, callees to double, bit operations |
+| `reload_project()` | rebuild the project view now (normally automatic, see below) |
 | `run_lal(code)` | runs a Python snippet with `lal`, `ctx`, `prj`, `unit()`, `units()`, `rel()` preloaded |
 | `api_help(name)` | signature and docs of a Libadalang class or property |
 | `dump(target, start_line, end_line, max_depth)` | syntax tree (node kinds, fields) of a line range |
@@ -170,8 +171,26 @@ python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debu
 | `--http`, `--host`, `--port`, `--token-env` | serve over HTTP instead of stdio; see [HTTP mode](#http-mode-the-client-connects-instead-of-launching) |
 
 `initialize` is answered immediately. The project is chosen and loaded on the
-first tool call, then kept warm. Files are re-parsed when their mtime changes.
-Logs go to stderr; stdout carries only the protocol.
+first tool call, then kept warm. Logs go to stderr; stdout carries only the protocol.
+
+### Project changes
+
+The server keeps a long-lived view of the project: source list, unit lookup,
+caches. That matters most in HTTP mode, where it runs for days.
+
+- **Edited files** are re-parsed when their modification time changes.
+- **Added, removed or re-added files, and `.gpr` edits,** are checked before
+  each tool call, at most once a second. The check is cheap: it stats the
+  project's `.gpr` files and source directories. When something changed, the
+  project is reloaded, all derived caches are dropped, and the answer starts
+  with e.g. `[project reloaded: 1 file(s) added in src; 13 sources (+1 / -0)]`.
+  Editors that save by writing a temp file and renaming it don't trigger a
+  reload: only a change in the set of Ada files in a directory does.
+- **A broken `.gpr`** (say, mid-edit) doesn't take the server down. It keeps
+  answering from the previous view, says so, and retries on the next call.
+- **`reload_project`** forces a reload. Use it where directory timestamps aren't
+  reliable (some network drives), or after changing environment variables a
+  project reads.
 
 ## Codex configuration
 

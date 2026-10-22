@@ -1,8 +1,11 @@
 """GPR project / AnalysisContext lifecycle.
 
 One warm AnalysisContext per process, created lazily on the first tool call.
-Files are re-parsed when their mtime changes. All paths shown to the model
-are workspace-relative with forward slashes.
+Files are re-parsed when their mtime changes. The whole project view (source
+list, unit provider, derived caches) is rebuilt when a project file changes or
+Ada files are added to / removed from a source directory (refresh_if_changed),
+or on request (reload). All paths shown to the model are workspace-relative
+with forward slashes.
 """
 
 from __future__ import annotations
@@ -10,12 +13,19 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 log = logging.getLogger("lal_mcp.session")
 
 ADA_EXTS = (".ads", ".adb", ".ada")
+_GPR_COMMENT = re.compile(r"--[^\n]*")
+# with "a.gpr", "b";  limited with "c.gpr";  project X extends [all] "d.gpr" is
+_GPR_DEPS = re.compile(r'\b(?:limited\s+)?with\s+"[^;]*;|\bextends\s+(?:all\s+)?"[^"]+"', re.I)
+# caches other modules attach to the session; cleared on reload
+_DERIVED_CACHES = ("_unit_index", "_buildinfo")
 
 
 class ToolFailure(Exception):
@@ -70,6 +80,12 @@ class Session:
         self._mtimes: dict[str, float] = {}
         self._load_error: str | None = None
         self.load_note: str | None = None  # shown once, on the first tool response after loading
+        # change detection (see refresh_if_changed)
+        self._gpr_mtimes: dict[str, float | None] = {}
+        self._dir_mtimes: dict[str, float | None] = {}
+        self._dir_names: dict[str, frozenset[str]] = {}
+        self._last_check = 0.0
+        self.reloads = 0
 
     # ------------------------------------------------------------------ load
 
@@ -89,6 +105,13 @@ class Session:
             raise
 
     def _load(self) -> None:
+        self.lal, self.prj, self.ctx = self._build()
+        self._snapshot()
+        log.info("project loaded: %d source files", len(self.sources()))
+
+    def _build(self):
+        """Load the GPR project and create a fresh analysis context. Doesn't touch self's state
+        except project_errors / load_note, so a failed reload leaves the previous view usable."""
         try:
             import libadalang as lal
         except Exception as exc:  # ImportError, OSError from a missing DLL/.so
@@ -129,8 +152,132 @@ class Session:
             ctx = prj.create_context()
         except Exception as exc:
             raise ToolFailure(f"cannot create analysis context: {last_line(exc)}") from exc
+        return lal, prj, ctx
+
+    # ------------------------------------------------------- reload / invalidation
+
+    def project_files(self) -> list[str]:
+        """The root .gpr and the project files it withs/extends that can be found (textual scan).
+        Installed projects that can't be located are not watched; they rarely change."""
+        search = [os.path.dirname(self.project_path)]
+        for var in ("GPR_PROJECT_PATH", "ADA_PROJECT_PATH"):
+            search += [p for p in os.environ.get(var, "").split(os.pathsep) if p]
+        gnat = shutil.which("gnat") or shutil.which("gprbuild")
+        if gnat:
+            prefix = os.path.dirname(os.path.dirname(gnat))
+            search += [os.path.join(prefix, "share", "gpr"), os.path.join(prefix, "lib", "gnat")]
+        seen: dict[str, str] = {}
+        todo = [self.project_path]
+        while todo:
+            f = os.path.abspath(todo.pop())
+            key = norm(f)
+            if key in seen or not os.path.isfile(f):
+                continue
+            seen[key] = f
+            try:
+                with open(f, encoding="latin-1") as fh:
+                    text = _GPR_COMMENT.sub("", fh.read())
+            except OSError:
+                continue
+            for clause in _GPR_DEPS.finditer(text):
+                for name in re.findall(r'"([^"]+)"', clause.group(0)):
+                    if not name.lower().endswith(".gpr"):
+                        name += ".gpr"
+                    base = [os.path.dirname(f)] + search
+                    hit = next((os.path.join(b, name) for b in base if os.path.isfile(os.path.join(b, name))), None)
+                    if hit:
+                        todo.append(hit)
+        return list(seen.values())
+
+    def _source_dirs(self) -> set[str]:
+        return {os.path.dirname(f) for f in self.sources()}
+
+    @staticmethod
+    def _stat(path: str) -> float | None:
+        try:
+            return os.stat(path).st_mtime
+        except OSError:
+            return None
+
+    def _ada_names(self, d: str) -> frozenset[str]:
+        exts = getattr(self, "_watch_exts", ADA_EXTS)
+        try:
+            return frozenset(n.lower() for n in os.listdir(d) if n.lower().endswith(exts))
+        except OSError:
+            return frozenset()
+
+    def _snapshot(self) -> None:
+        """Record what the current project view was built from."""
+        # also watch the suffixes this project's Naming package actually uses (.1.ada, .spc ...)
+        self._watch_exts = tuple(sorted(set(ADA_EXTS) | {os.path.splitext(f)[1].lower()
+                                                         for f in self.sources() if os.path.splitext(f)[1]}))
+        self._gpr_mtimes = {f: self._stat(f) for f in self.project_files()}
+        self._dir_mtimes, self._dir_names = {}, {}
+        for d in self._source_dirs():
+            self._dir_mtimes[d] = self._stat(d)
+            self._dir_names[d] = self._ada_names(d)
+        self._last_check = time.monotonic()
+
+    def detect_changes(self) -> list[str]:
+        """Reasons the project view is out of date: an edited/added/removed .gpr, or Ada files
+        added to / removed from a source directory. Content edits of known files don't count
+        (those are re-parsed by mtime on their own)."""
+        reasons = []
+        for f, m in self._gpr_mtimes.items():
+            now = self._stat(f)
+            if now != m:
+                reasons.append(f"{os.path.basename(f)} {'changed' if now else 'removed'}")
+        if reasons:
+            return reasons
+        for d, m in self._dir_mtimes.items():
+            now = self._stat(d)
+            if now == m:
+                continue  # nothing created/deleted/renamed in this directory
+            self._dir_mtimes[d] = now  # an atomic save also bumps it: compare names before reloading
+            names = self._ada_names(d)
+            old = self._dir_names.get(d, frozenset())
+            added, removed = names - old, old - names
+            if added or removed:
+                where = self.rel(d) or "."
+                if added:
+                    reasons.append(f"{len(added)} file(s) added in {where}")
+                if removed:
+                    reasons.append(f"{len(removed)} file(s) removed from {where}")
+        return reasons
+
+    def reload(self, reason: str) -> str:
+        """Rebuild the project view and drop every cache derived from it."""
+        old = set(self._source_keys) if self._sources is not None else set()
+        try:
+            lal, prj, ctx = self._build()
+        except ToolFailure as exc:
+            self._last_check = time.monotonic()
+            raise ToolFailure(f"project reload failed ({reason}): {exc}. Still answering from the previous "
+                              "project view; fix the project and the next call retries.") from exc
         self.lal, self.prj, self.ctx = lal, prj, ctx
-        log.info("project loaded: %d source files", len(self.sources()))
+        self._sources, self._source_keys, self._mtimes = None, set(), {}
+        for attr in _DERIVED_CACHES:
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+        self._load_error = None
+        self._snapshot()
+        self.reloads += 1
+        new = set(self._source_keys)
+        diff = f"{len(self.sources())} sources"
+        if old:
+            diff += f" (+{len(new - old)} / -{len(old - new)})"
+        log.info("project reloaded: %s; %s", reason, diff)
+        return f"[project reloaded: {reason}; {diff}]"
+
+    def refresh_if_changed(self, interval: float = 1.0) -> str | None:
+        """Called before each tool call: reload when the project view is stale. Returns a note."""
+        if self.ctx is None or time.monotonic() - self._last_check < interval:
+            return None
+        self._last_check = time.monotonic()
+        reasons = self.detect_changes()
+        if not reasons:
+            return None
+        return self.reload("; ".join(reasons))
 
     # --------------------------------------------------------------- sources
 
