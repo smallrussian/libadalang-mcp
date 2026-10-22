@@ -41,14 +41,17 @@ def locations(text: str) -> set[str]:
 
 
 def score(q: dict, answer: str) -> dict:
+    """Recall over expected groups (a group is satisfied by any of its locations, e.g. a
+    subprogram's spec or body), plus wrong locations in the files that matter."""
     got = locations(answer)
-    exp = {e.lower() for e in q["expected"]}
-    allow = {e.lower() for e in q.get("allow", [])}
+    groups = [{e.lower() for e in g} for g in q.get("expected_groups", [[e] for e in q["expected"]])]
+    known = set().union(*groups) | {e.lower() for e in q.get("allow", [])}
     fp_files = {f.lower() for f in q.get("fp_files", [])}
-    hits = exp & got
-    wrong = {g for g in got - exp - allow if g.split(":")[0] in fp_files}
-    return {"recall": len(hits) / len(exp), "wrong": sorted(wrong), "missed": sorted(exp - got),
-            "correct": hits == exp and not wrong}
+    hit = [bool(g & got) for g in groups]
+    wrong = {g for g in got - known if g.split(":")[0] in fp_files}
+    return {"recall": sum(hit) / len(groups), "wrong": sorted(wrong),
+            "missed": sorted(sorted(g)[0] for g, h in zip(groups, hit) if not h),
+            "correct": all(hit) and not wrong}
 
 
 def run_claude(claude: str, prompt: str, cwd: str, mcp_config: str, allowed: str, model: str | None,
@@ -98,14 +101,20 @@ def main() -> None:
     ap.add_argument("--cwd", required=True, help="repository the agent works in")
     ap.add_argument("--mcp-config", required=True, help="MCP config with the 'ada' server")
     ap.add_argument("--claude", default="claude")
-    ap.add_argument("--model")
+    ap.add_argument("--models", default="", help="comma-separated, e.g. sonnet,haiku (default: CLI default)")
     ap.add_argument("--runs", type=int, default=1)
+    ap.add_argument("--parallel", type=int, default=1, help="concurrent claude processes")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--only", help="comma-separated question ids")
     ap.add_argument("--json", help="write raw results here")
+    ap.add_argument("--resume", help="previous --json results; skip runs already there")
     a = ap.parse_args()
 
-    qs = json.load(open(a.questions, encoding="utf-8"))["questions"]
+    qs = []
+    for path in a.questions.split(","):
+        for q in json.load(open(path, encoding="utf-8"))["questions"]:
+            q.setdefault("kind", "hand")
+            qs.append(q)
     if a.only:
         keep = set(a.only.split(","))
         qs = [q for q in qs if q["id"] in keep]
@@ -116,32 +125,62 @@ def main() -> None:
         "with_tools": (a.mcp_config, "mcp__ada__* Read Grep Glob"),
         "no_tools": (empty, "Read Grep Glob"),
     }
-    rows = []
-    for q in qs:
-        for cond, (cfg, allowed) in conditions.items():
-            for run in range(a.runs):
-                r = run_claude(a.claude, q["question"] + FORMAT, a.cwd, cfg, allowed, a.model, a.timeout)
-                r.update(score(q, r["answer"]), id=q["id"], condition=cond, run=run)
-                rows.append(r)
-                print(f"{q['id']:<20} {cond:<11} correct={r['correct']!s:<5} recall={r['recall']:.2f} "
-                      f"wrong={len(r['wrong'])} turns={r['turns']} in_tok={r['input_tokens']} "
-                      f"cost=${r['cost_usd'] or 0:.3f} {r['seconds']}s tools={r['tool_calls']}", flush=True)
+    models = [m for m in a.models.split(",") if m] or [None]
+    rows: list[dict] = []
+    if a.resume and os.path.exists(a.resume):
+        rows = json.load(open(a.resume, encoding="utf-8"))
+    qmap = {q["id"]: q for q in qs}
+    rows = [r for r in rows if r.get("ok") and r["id"] in qmap]
+    for r in rows:  # re-score reused answers with the current rules
+        r.update(score(qmap[r["id"]], r["answer"]), kind=qmap[r["id"]]["kind"])
+    done = {(r["model"], r["id"], r["condition"], r["run"]) for r in rows}
+    jobs = [(m, q, cond, run) for m in models for q in qs for cond in conditions for run in range(a.runs)
+            if (m or "default", q["id"], cond, run) not in done]
+    print(f"{len(jobs)} runs ({len(done)} reused)", flush=True)
 
-    print("\nsummary")
-    print(f"{'condition':<11} {'correct':>9} {'recall':>7} {'wrong locs':>10} {'med input tok':>13} "
-          f"{'med cost $':>10} {'med secs':>8}")
-    for cond in conditions:
-        rs = [r for r in rows if r["condition"] == cond]
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    lock = threading.Lock()
+
+    def one(job):
+        m, q, cond, run = job
+        cfg, allowed = conditions[cond]
+        r = run_claude(a.claude, q["question"] + FORMAT, a.cwd, cfg, allowed, m, a.timeout)
+        r.update(score(q, r["answer"]), id=q["id"], kind=q["kind"], condition=cond, run=run, model=m or "default")
+        with lock:
+            rows.append(r)
+            print(f"{r['model']:<7} {q['id'][:34]:<34} {cond:<10} ok={r['correct']!s:<5} recall={r['recall']:.2f} "
+                  f"wrong={len(r['wrong'])} turns={r['turns']} ${r['cost_usd'] or 0:.3f} {r['seconds']}s", flush=True)
+            if a.json:
+                with open(a.json, "w", encoding="utf-8") as f:
+                    json.dump(rows, f, indent=2)
+
+    with ThreadPoolExecutor(max_workers=max(1, a.parallel)) as ex:
+        list(ex.map(one, jobs))
+    report(rows)
+
+
+def report(rows: list[dict]) -> None:
+    def line(label, rs):
         if not rs:
-            continue
-        print(f"{cond:<11} {sum(r['correct'] for r in rs):>4}/{len(rs):<4} "
-              f"{statistics.mean(r['recall'] for r in rs):>7.2f} {sum(len(r['wrong']) for r in rs):>10} "
-              f"{statistics.median(r['input_tokens'] for r in rs):>13.0f} "
-              f"{statistics.median((r['cost_usd'] or 0) for r in rs):>10.3f} "
-              f"{statistics.median(r['seconds'] for r in rs):>8.1f}")
-    if a.json:
-        with open(a.json, "w", encoding="utf-8") as f:
-            json.dump(rows, f, indent=2)
+            return
+        n = len(rs)
+        print(f"  {label:<28} correct {sum(r['correct'] for r in rs):>3}/{n:<3} ({100 * sum(r['correct'] for r in rs) / n:5.1f}%)"
+              f"  recall {statistics.mean(r['recall'] for r in rs):.2f}"
+              f"  wrong locs {sum(len(r['wrong']) for r in rs):>3}"
+              f"  turns {statistics.mean((r['turns'] or 0) for r in rs):4.1f}"
+              f"  secs {statistics.mean(r['seconds'] for r in rs):5.1f}"
+              f"  cost ${statistics.mean((r['cost_usd'] or 0) for r in rs):.3f}/q (total ${sum((r['cost_usd'] or 0) for r in rs):.2f})")
+
+    for m in sorted({r["model"] for r in rows}):
+        print()
+        print(f"model: {m}")
+        for cond in ("with_tools", "no_tools"):
+            line(cond, [r for r in rows if r["model"] == m and r["condition"] == cond])
+        for kind in sorted({r["kind"] for r in rows}):
+            for cond in ("with_tools", "no_tools"):
+                line(f"{kind} / {cond}", [r for r in rows if r["model"] == m and r["condition"] == cond and r["kind"] == kind])
 
 
 if __name__ == "__main__":
