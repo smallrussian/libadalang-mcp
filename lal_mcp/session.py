@@ -69,6 +69,7 @@ class Session:
         self._source_keys: set[str] = set()
         self._mtimes: dict[str, float] = {}
         self._load_error: str | None = None
+        self.load_note: str | None = None  # shown once, on the first tool response after loading
 
     # ------------------------------------------------------------------ load
 
@@ -97,6 +98,11 @@ class Session:
             ) from exc
         if not os.path.isfile(self.project_path):
             raise ToolFailure(f"project file not found: {self.project_path}")
+        if "PATH" not in os.environ:
+            # GPR's Ada code reads PATH unconditionally; when it is unset it raises an
+            # unhandled CONSTRAINT_ERROR that terminates the whole process.
+            os.environ["PATH"] = os.defpath
+            log.warning("PATH was unset; using %r. Put the GNAT bin directory on PATH.", os.defpath)
         log.info("loading project %s", self.project_path)
         try:
             prj = lal.GPRProject(
@@ -111,6 +117,14 @@ class Session:
         self.project_errors = list(prj.errors)
         for err in self.project_errors:
             log.warning("project: %s", err)
+        if self.project_errors:
+            shown = "\n  ".join(self.project_errors[:5])
+            more = f"\n  ... {len(self.project_errors) - 5} more" if len(self.project_errors) > 5 else ""
+            self.load_note = (
+                f"[project warnings, results may be incomplete]\n  {shown}{more}\n"
+                "  (\"can't find a toolchain\" means the GNAT bin directory is not on the server's PATH,"
+                " so runtime units such as Ada.Text_IO will not resolve)\n"
+            )
         try:
             ctx = prj.create_context()
         except Exception as exc:

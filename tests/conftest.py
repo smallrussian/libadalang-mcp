@@ -16,9 +16,9 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 
-def server_env(stub: str | None = None) -> dict[str, str]:
+def server_env(stub: str | None = None, drop: tuple[str, ...] = ()) -> dict[str, str]:
     """Full environment for the server process, optionally shadowing libadalang with a stub."""
-    env = dict(os.environ)
+    env = {k: v for k, v in os.environ.items() if k.upper() not in {d.upper() for d in drop}}
     if stub:
         stub_dir = os.path.join(TESTS, "stubs", stub)
         env["PYTHONPATH"] = stub_dir + os.pathsep + env.get("PYTHONPATH", "")

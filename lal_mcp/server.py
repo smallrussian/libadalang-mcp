@@ -48,6 +48,8 @@ def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow th
             raise ToolFailure("server not configured (no project)")
         SESSION.ensure_loaded()
         text, is_error = SESSION.with_retry(lambda: fn(SESSION, *args))
+        if SESSION.load_note:
+            text, SESSION.load_note = SESSION.load_note + text, None
     except ToolFailure as exc:
         text, is_error = str(exc), True
     except Exception as exc:  # PropertyError, repeated StaleReferenceError, bugs

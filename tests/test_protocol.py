@@ -101,3 +101,39 @@ def test_bad_cli_args_exit_nonzero():
     assert r.returncode != 0
     assert r.stdout == ""  # usage errors go to stderr, never the protocol stream
     assert "--project" in r.stderr
+
+
+def test_server_survives_missing_path_env():
+    """GPR's Ada code aborts the process when PATH is unset; the server must not die."""
+    import json
+    import subprocess
+    import sys
+
+    from conftest import ROOT, SERVER, server_env
+
+    env = server_env(drop=("PATH",))
+    p = subprocess.Popen([sys.executable, SERVER, "-P", FIXTURE_GPR], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=ROOT)
+
+    def rpc(i, method, params=None):
+        msg = {"jsonrpc": "2.0", "id": i, "method": method, "params": params or {}}
+        p.stdin.write((json.dumps(msg) + "\n").encode())
+        p.stdin.flush()
+        while True:
+            line = p.stdout.readline()
+            assert line, "server died"
+            resp = json.loads(line)
+            if resp.get("id") == i:
+                return resp
+
+    try:
+        rpc(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                              "clientInfo": {"name": "t", "version": "0"}})
+        p.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+        p.stdin.flush()
+        r = rpc(2, "tools/call", {"name": "find_unit", "arguments": {"name": "Vehicle"}})
+        assert "result" in r  # an answer (or an isError result), not a dead process
+        assert "result" in rpc(3, "tools/list")
+    finally:
+        p.stdin.close()
+        p.wait(timeout=30)
