@@ -72,10 +72,12 @@ def score(q: dict, answer: str) -> dict:
             "correct": all(hit) and not wrong}
 
 
-def _run(cmd: list[str], cwd: str, timeout: int, env: dict | None = None) -> tuple[str, int | None]:
+def _run(cmd: list[str], cwd: str, timeout: int, env: dict | None = None,
+         stdin_text: str | None = None) -> tuple[str, int | None]:
     try:
+        extra = {"input": stdin_text} if stdin_text is not None else {"stdin": subprocess.DEVNULL}
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, env=env)
+                           errors="replace", timeout=timeout, env=env, **extra)
         return p.stdout, p.returncode
     except subprocess.TimeoutExpired as exc:
         out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
@@ -143,8 +145,31 @@ def toml_value(v) -> str:
     raise TypeError(f"cannot express {type(v).__name__} in TOML")
 
 
+def codex_command(spec: str) -> list[str]:
+    """How to start Codex. npm installs ship codex.cmd / codex.ps1 wrappers on Windows;
+    run the underlying `node codex.js` instead, so arguments aren't re-quoted by cmd/PowerShell."""
+    import shutil
+
+    path = spec if os.path.isfile(spec) else (shutil.which(spec) or spec)
+    if path.lower().endswith(".js"):
+        return [shutil.which("node") or "node", path]
+    if path.lower().endswith((".cmd", ".ps1", ".bat")) or (os.name == "nt" and not path.lower().endswith(".exe")):
+        base = os.path.dirname(os.path.abspath(path))
+        js = os.path.join(base, "node_modules", "@openai", "codex", "bin", "codex.js")
+        node = os.path.join(base, "node.exe")
+        if os.path.isfile(js):
+            return [node if os.path.isfile(node) else (shutil.which("node") or "node"), js]
+    return [path]
+
+
 def codex_overrides(base: dict, ada: dict | None) -> list[str]:
-    """`-c` arguments: the eval TOML's settings, plus the ada server for with_tools."""
+    """`-c` arguments: the eval TOML's settings, plus the ada server for with_tools.
+
+    `ada` is either a stdio server ({"command", "args", "env"}) or an HTTP one ({"url"}).
+    approval_policy="never" makes Codex refuse (not wait for) tools that need approval,
+    so the ada server is set to default_tools_approval_mode="approve" (verified with codex-cli 0.163):
+    the eval measures answers, not approval prompts.
+    """
     args = []
     for k, v in base.items():
         if k == "mcp_servers":
@@ -152,9 +177,15 @@ def codex_overrides(base: dict, ada: dict | None) -> list[str]:
         args += ["-c", f"{k}={toml_value(v)}"]
     args += ["-c", 'approval_policy="never"']
     if ada is not None:
-        server = {"command": ada["command"], "args": list(ada.get("args", []))}
-        if ada.get("env"):
+        if ada.get("url"):
+            server = {"url": ada["url"]}
+            if ada.get("bearer_token_env_var"):
+                server["bearer_token_env_var"] = ada["bearer_token_env_var"]
+        else:
+            server = {"command": ada["command"], "args": list(ada.get("args", []))}
+        if ada.get("env") and not ada.get("url"):
             server["env"] = dict(ada["env"])
+        server["default_tools_approval_mode"] = "approve"  # "auto" = per annotations: run_lal would be refused
         server["startup_timeout_sec"] = int(ada.get("startup_timeout_sec", 60))
         server["tool_timeout_sec"] = int(ada.get("tool_timeout_sec", 180))
         args += ["-c", f"mcp_servers.ada={toml_value(server)}"]
@@ -206,14 +237,14 @@ def parse_codex_events(out: str) -> dict:
 def run_codex(a, prompt: str, with_tools: bool, model: str | None, raw_path: str | None) -> dict:
     last = tempfile.NamedTemporaryFile(prefix="codex_last_", suffix=".txt", delete=False)
     last.close()
-    cmd = [a.codex, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
-           "-s", "read-only", "-C", a.cwd, "-o", last.name]
+    cmd = a._codex_cmd + ["exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
+                          "-s", "read-only", "-C", a.cwd, "-o", last.name]
     cmd += codex_overrides(a._codex_base, a._ada if with_tools else None)
     if model:
         cmd += ["-m", model]
-    cmd.append(prompt)
+    cmd.append("-")  # prompt on stdin: no Windows command-line quoting of a long multi-line prompt
     t = time.monotonic()
-    out, rc = _run(cmd, a.cwd, a.timeout)
+    out, rc = _run(cmd, a.cwd, a.timeout, stdin_text=prompt)
     if raw_path:
         with open(raw_path, "w", encoding="utf-8") as f:
             f.write(out)
@@ -254,7 +285,8 @@ def main() -> None:
     ap.add_argument("--cwd", required=True, help="repository the agent works in")
     ap.add_argument("--mcp-config", required=True, help="JSON with mcpServers.ada (Claude .mcp.json format)")
     ap.add_argument("--claude", default="claude", help="claude executable")
-    ap.add_argument("--codex", default="codex", help="codex executable")
+    ap.add_argument("--codex", default="codex",
+                    help="codex command or path (npm's codex.cmd/.ps1 or codex.js are run via node)")
     ap.add_argument("--codex-config", help="TOML with model/provider settings for codex (required for --agent codex)")
     ap.add_argument("--price-in", type=float, help="codex: $ per 1M input tokens")
     ap.add_argument("--price-cached", type=float, help="codex: $ per 1M cached input tokens")
@@ -268,6 +300,10 @@ def main() -> None:
     ap.add_argument("--resume", help="previous --json results; skip runs already there")
     ap.add_argument("--raw-dir", help="save each run's raw agent output here")
     ap.add_argument("--dry-run", action="store_true", help="print the commands for the first question and exit")
+    ap.add_argument("--with-tools-guidance", choices=("auto", "agents", "none"), default="auto",
+                    help="with_tools runs only: 'agents' prepends docs/AGENTS-snippet.md, i.e. the AGENTS.md "
+                         "guidance you would ship with the tools; 'auto' = agents for codex (which does not "
+                         "act on the server's instructions by itself), none for claude")
     a = ap.parse_args()
 
     with open(a.mcp_config, encoding="utf-8") as f:
@@ -282,6 +318,17 @@ def main() -> None:
 
         with open(a.codex_config, "rb") as f:
             a._codex_base = tomllib.load(f)
+    a._codex_cmd = codex_command(a.codex) if a.agent == "codex" else []
+    mode = a.with_tools_guidance
+    if mode == "auto":
+        mode = "agents" if a.agent == "codex" else "none"
+    a._guidance = ""
+    if mode == "agents":
+        snippet = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs",
+                                    "AGENTS-snippet.md"), encoding="utf-8").read()
+        snippet = re.sub(r"<!--.*?-->", "", snippet, flags=re.S).strip()
+        a._guidance = f"Repository instructions (AGENTS.md):\n{snippet}\n\nTask:\n"
+    print(f"with_tools guidance: {mode}", flush=True)
     runner = run_codex if a.agent == "codex" else run_claude
 
     qs = []
@@ -298,9 +345,10 @@ def main() -> None:
         for with_tools in (True, False):
             print(f"# {'with_tools' if with_tools else 'no_tools'}")
             if a.agent == "codex":
-                cmd = [a.codex, "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
-                       "-s", "read-only", "-C", a.cwd, "-o", "<last-message-file>"]
-                cmd += codex_overrides(a._codex_base, a._ada if with_tools else None) + [prompt]
+                cmd = a._codex_cmd + ["exec", "--json", "--ephemeral", "--skip-git-repo-check",
+                                      "--ignore-user-config", "-s", "read-only", "-C", a.cwd,
+                                      "-o", "<last-message-file>"]
+                cmd += codex_overrides(a._codex_base, a._ada if with_tools else None) + ["-", "<<< prompt on stdin"]
             else:
                 cmd = [a.claude, "-p", prompt, "--mcp-config", a.mcp_config if with_tools else a._empty_mcp,
                        "--strict-mcp-config"]
@@ -331,9 +379,10 @@ def main() -> None:
     def one(job):
         m, q, cond, run = job
         raw = os.path.join(a.raw_dir, f"{a.agent}_{m or 'default'}_{q['id']}_{cond}_{run}.jsonl") if a.raw_dir else None
-        r = runner(a, q["question"] + FORMAT, cond == "with_tools", m, raw)
+        prompt = (a._guidance if cond == "with_tools" else "") + q["question"] + FORMAT
+        r = runner(a, prompt, cond == "with_tools", m, raw)
         r.update(score(q, r["answer"]), id=q["id"], kind=q["kind"], condition=cond, run=run,
-                 model=m or "default", agent=a.agent)
+                 model=m or "default", agent=a.agent, guidance=bool(a._guidance and cond == "with_tools"))
         with lock:
             rows.append(r)
             cost = f"${r['cost_usd']:.3f}" if r.get("cost_usd") is not None else f"{r['input_tokens']}tok"

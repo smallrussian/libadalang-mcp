@@ -1,22 +1,27 @@
-# Model/provider settings for the Codex A/B eval (scripts/eval_agent.py --agent codex).
+# Codex settings for the A/B eval (scripts/codex_ab.py / eval_agent.py --agent codex).
 #
-# Copy to codex_eval.toml and fill in. The eval runs `codex exec --ignore-user-config`,
-# so ~/.codex/config.toml is NOT read: put here whatever Codex needs to reach your
-# model. Usually that's your [model_providers.*] block and model, copied from your
-# config. Do NOT add [mcp_servers] here: the eval adds the `ada` server itself for
-# the with-tools runs, and leaves it out of the no-tools runs.
+# Copy to e.g. my_codex_eval.toml and adjust. The eval runs `codex exec --ignore-user-config`,
+# so ~/.codex/config.toml is NOT read; put here whatever Codex needs. Do NOT add
+# [mcp_servers] here: the eval adds the `ada` server itself for the with-tools runs
+# (auto-approved) and leaves it out of the no-tools runs.
 #
-# Auth: the API key is taken from the environment variable named in env_key below
-# (export it before running), or from CODEX_HOME/auth.json for a ChatGPT login.
+# Auth: a ChatGPT login (codex login) works as is. For an API proxy, the key comes
+# from the environment variable named in env_key (export it before running).
+#
+# TOML note: plain keys must come before the first [table] header, or they end up inside it.
 
-model_provider = "proxy"
-model = "<gpt model name the proxy exposes>"
+# Optional: a specific model (default: Codex's default for your account)
+# model = "gpt-6.1-sol"
 
-[model_providers.proxy]
-name = "internal proxy"
-base_url = "https://<proxy>/v1"
-env_key = "PROXY_API_KEY"
-wire_api = "responses"   # or "chat", whatever the proxy supports
+# A custom OpenAI-compatible proxy instead of the ChatGPT login:
+# model_provider = "proxy"
+# model = "<gpt model name the proxy exposes>"
+# [model_providers.proxy]
+# name = "internal proxy"
+# base_url = "https://<proxy>/v1"
+# env_key = "PROXY_API_KEY"
+# wire_api = "responses"   # or "chat", whatever the proxy supports
 
-# Optional: reasoning effort, if your model supports it
-# model_reasoning_effort = "medium"
+# Windows: match the sandbox mode you use day to day, e.g. without admin rights:
+[windows]
+sandbox = "unelevated"

@@ -43,7 +43,26 @@ def test_codex_overrides_with_tools_round_trip():
     assert cfg["approval_policy"] == "never"
     ada = cfg["mcp_servers"]["ada"]
     assert ada["command"] == ADA["command"] and ada["args"] == ADA["args"] and ada["env"] == ADA["env"]
+    assert ada["default_tools_approval_mode"] == "approve"  # else run_lal is refused under approval "never"
     assert "leak" not in cfg["mcp_servers"]  # servers from the eval TOML are never passed
+
+
+def test_codex_overrides_http_server():
+    cfg = _as_config(ea.codex_overrides({"windows": {"sandbox": "unelevated"}}, {"url": "http://127.0.0.1:1/mcp"}))
+    assert cfg["windows"] == {"sandbox": "unelevated"}
+    ada = cfg["mcp_servers"]["ada"]
+    assert ada["url"] == "http://127.0.0.1:1/mcp" and "command" not in ada and "env" not in ada
+
+
+def test_codex_command_runs_npm_wrappers_via_node(tmp_path):
+    js = tmp_path / "node_modules" / "@openai" / "codex" / "bin"
+    js.mkdir(parents=True)
+    (js / "codex.js").write_text("")
+    (tmp_path / "node.exe").write_text("")
+    (tmp_path / "codex.cmd").write_text("")
+    cmd = ea.codex_command(str(tmp_path / "codex.cmd"))
+    assert cmd == [str(tmp_path / "node.exe"), str(js / "codex.js")]
+    assert ea.codex_command(str(js / "codex.js"))[1] == str(js / "codex.js")
 
 
 def test_codex_overrides_no_tools_has_no_servers():
