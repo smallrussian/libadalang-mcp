@@ -7,7 +7,14 @@ description: Write or extend unit tests for Ada subprograms using the ada MCP to
 
 Follow these steps in order. Each step names the tool that grounds it. When a
 step hits the uncertainty gate (AGENTS.md: `[status: INCOMPLETE ...]`,
-`unresolved`, `[project warnings ...]`), stop and report. Don't work around it.
+`unresolved` facts about the code, `[project warnings ...]`), stop and report.
+Don't work around it. A mistake in your own query (a wrong API name in
+`api_help`/`run_lal`, a position not on a name) isn't a gate: fix it and retry once.
+
+The specification for expected values is the declaration's documentation
+(`test_model` prints it), its contracts, and the project's requirements. It's
+never the body. If the specification leaves a case open, list it as an open
+question rather than guessing.
 
 ## 1. Scope
 

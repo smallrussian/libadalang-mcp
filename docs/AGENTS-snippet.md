@@ -61,8 +61,22 @@ missing (the tool's own text), and what would resolve it. Do not:
 - substitute a similarly named entity, a guessed symbol owner, or a guessed `with`;
 - continue with invented values "to be fixed later".
 
-`no declaration: ...` is not a blocker. It means the name has nothing to go to
-(an attribute, a predefined operator, a pragma name).
+These are not blockers:
+
+- `no declaration: ...`: the name has nothing to go to (an attribute, a
+  predefined operator, a pragma name).
+- An error in **your own query**:
+  - a mistyped Libadalang API name in `api_help` or `run_lal` (the answer lists
+    close matches);
+  - a `file:line:column` that isn't on a name (the answer lists the names on
+    that line);
+  - a `run_lal` snippet error.
+
+  Correct the query and retry once. The gate is about facts of the code that
+  can't be established, not about your request's mistakes.
+
+If a tool answer looks wrong (for example, a type described implausibly), say
+so and confirm with a second tool (`goto_definition`, `outline`). Don't build on it.
 
 ### Build and link changes
 

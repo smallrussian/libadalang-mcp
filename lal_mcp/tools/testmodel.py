@@ -113,6 +113,13 @@ def describe_type(lal, sess: Session, type_expr, gaps: list[str]) -> tuple[str, 
                 facts.append("tagged" + (", abstract" if "abstract" in td.text.lower() else ""))
             if "'class" in type_expr.text.lower():
                 facts.append("class-wide: test with each concrete derived type (dispatching)")
+        elif td.p_is_char_type() and td.p_defining_name.text.lower() in (
+                "character", "wide_character", "wide_wide_character"):
+            std = {"character": (256, "Latin-1"), "wide_character": (2**16, "BMP"),
+                   "wide_wide_character": (2**31, "UCS-4")}[td.p_defining_name.text.lower()]
+            facts.append(f"character type, {std[0]} values ({std[1]})")
+            n = td.p_defining_name.text
+            bounds = [f"{n}'First (NUL)", "' ' (space)", "'0'", "'A'", f"{n}'Val (127)", f"{n}'Last"]
         elif td.p_is_enum_type():
             base = td.p_base_subtype() if hasattr(td, "p_base_subtype") else td
             lits = [l.p_defining_name.text for l in base.findall(lal.EnumLiteralDecl)]
@@ -198,6 +205,22 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
     out.append(f"test model: {fqn} [{kind}]  parts: {part_txt}")
     if sspec is not None:
         out.append("signature: " + one_line(sspec.text, 300))
+
+    # --- documentation: the specification to derive expected values from
+    doc = ""
+    for p in parts:
+        try:
+            doc = (p.p_doc or "").strip()
+        except (lal.PropertyError, Exception):
+            doc = ""
+        if doc:
+            out.append(f"documentation ({sess.loc(p)}), the specification for expected values:")
+            text = doc if len(doc) <= 1500 else doc[:1500] + " ..."
+            out += [f"  | {ln}" for ln in text.splitlines()]
+            break
+    if not doc:
+        out.append("documentation: none on the declaration; get the specification from the requirements, "
+                   "not from the implementation")
 
     # --- body status
     imported = False
@@ -356,6 +379,8 @@ def _body_analysis(lal, sess: Session, body, spec, gaps: list[str]) -> list[str]
                     w = False
                 key = dn.p_fully_qualified_name if hasattr(dn, "p_fully_qualified_name") else dn.text
                 (writes if w else reads).setdefault(key, sess.loc(d))
+        elif d.is_a(lal.EnumLiteralDecl):
+            continue  # literals such as False are not calls
         elif d.p_is_subprogram and name.p_is_call:
             outer = name
             while outer.parent is not None and outer.parent.is_a(lal.DottedName) and outer.parent.f_suffix == outer:

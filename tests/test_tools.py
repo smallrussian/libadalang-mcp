@@ -182,3 +182,13 @@ def test_references_omit_dotted_end_names(s):
     assert "end Vehicle.Engine;" not in text
     assert "package body Vehicle.Engine" not in text
     assert "src/main_proc.2.ada:2: with Vehicle.Engine;" in text
+
+
+def test_test_model_includes_documentation_as_specification(s):
+    from lal_mcp.tools.testmodel import test_model
+
+    text, _ = test_model(s, "src/vehicle.1.ada", 14, 0)  # procedure Log (Value : Integer), commented below it
+    assert "documentation (src/vehicle.1.ada:14), the specification for expected values:" in text
+    assert "  | Two overloads: name resolution must pick the right one." in text
+    text, _ = test_model(s, "src/vehicle.1.ada", 17, 0)  # Distance: no comment
+    assert "documentation: none on the declaration" in text
