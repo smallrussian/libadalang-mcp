@@ -58,3 +58,7 @@ scratch/
 
 # --- Local GNAT Pro / libadalang install archives ---
 AdaCore-*.zip
+
+# --- CI outputs ---
+reports/
+.venv-ci/

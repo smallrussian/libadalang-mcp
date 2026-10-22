@@ -50,4 +50,8 @@ def have_libadalang() -> bool:
         return False
 
 
+if os.environ.get("LAL_REQUIRED") == "1" and not have_libadalang():
+    # CI jobs that are supposed to test against a real install must not pass by skipping.
+    raise RuntimeError("LAL_REQUIRED=1 but libadalang is not importable")
+
 requires_lal = pytest.mark.skipif(not have_libadalang(), reason="libadalang not importable")

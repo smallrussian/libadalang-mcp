@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs everywhere. Libadalang is not available on hosted runners (GNAT Pro is
+  # licensed), so the libadalang-backed tests skip; protocol, CLI, stdio
+  # protection and error-path tests run on Linux and Windows.
+  protocol:
+    name: protocol (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pytest -p no:cacheprovider -rs --junitxml=reports/junit-protocol.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-protocol-${{ matrix.os }}-py${{ matrix.python }}
+          path: reports/
+
+  # Full suite + smoke against a real GNAT Pro install. Needs a self-hosted
+  # runner labelled "gnatpro". Enable it by setting the repository variable
+  # GNATPRO_RUNNER=true, and GNATPRO_PREFIX if the install is not /opt/gnatpro/26.1.
+  libadalang:
+    if: vars.GNATPRO_RUNNER == 'true'
+    runs-on: [self-hosted, linux, gnatpro]
+    timeout-minutes: 30
+    env:
+      GNATPRO_PREFIX: ${{ vars.GNATPRO_PREFIX || '/opt/gnatpro/26.1' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash ci/full_tests.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-libadalang
+          path: reports/

@@ -1,0 +1,47 @@
+# GitLab CI for lal-mcp.
+#
+# protocol:   runs anywhere with Python; libadalang-backed tests skip.
+# libadalang: full suite + smoke against a real GNAT Pro + Libadalang install.
+#             Runs when GNATPRO_PREFIX is set (CI/CD variable). Pick where it runs:
+#               - a shell runner with GNAT Pro installed: set GNATPRO_RUNNER_TAG
+#                 to that runner's tag (default "gnatpro");
+#               - or a Docker image that contains GNAT Pro: set LAL_IMAGE.
+#
+# Offline / air-gapped: point PIP_INDEX_URL at your PyPI mirror and
+# PYTHON_IMAGE at your internal Python image.
+
+variables:
+  PYTHON_IMAGE: "python:3.12-slim"
+  GNATPRO_RUNNER_TAG: "gnatpro"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+stages:
+  - test
+
+.junit: &junit
+  artifacts:
+    when: always
+    paths:
+      - reports/
+    reports:
+      junit: reports/junit-*.xml
+
+protocol:
+  stage: test
+  image: $PYTHON_IMAGE
+  <<: *junit
+  script:
+    - python -m pip install -r requirements.txt
+    - python -m pytest -p no:cacheprovider -rs --junitxml=reports/junit-protocol.xml
+
+libadalang:
+  stage: test
+  image: $LAL_IMAGE
+  tags:
+    - $GNATPRO_RUNNER_TAG
+  timeout: 30m
+  <<: *junit
+  rules:
+    - if: $GNATPRO_PREFIX
+  script:
+    - bash ci/full_tests.sh
