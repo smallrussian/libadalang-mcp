@@ -32,6 +32,10 @@ FIXTURE_CALLS = [
     ("goto_definition", {"file": "src/main_proc.2.ada", "line": 10, "column": 19}),
     ("goto_definition", {"file": "src/bad_ref.2.ada", "line": 7, "column": 12}),
     ("find_references", {"file": "src/vehicle.1.ada", "line": 14, "column": 14}),
+    ("run_lal", {"code": 'for d in unit("Vehicle").root.findall(lal.BasicSubpDecl):\n'
+                         '    print(rel(d), d.p_defining_name.text)'}),
+    ("api_help", {"name": "WithClause"}),
+    ("dump", {"target": "src/vehicle.1.ada", "start_line": 8, "end_line": 11, "max_depth": 3}),
 ]
 
 GNATCOLL_CALLS = [

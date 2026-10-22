@@ -29,23 +29,44 @@ from lal_mcp.stdio_guard import protect_stdio
 log = logging.getLogger("lal_mcp")
 
 INSTRUCTIONS = """\
-Ada code intelligence backed by Libadalang name resolution over the project's own GPR file.
-Verify before asserting: check a subprogram's signature, a type's components, or who calls
+Ada code intelligence from Libadalang name resolution over the project's own GPR file.
+VERIFY BEFORE ASSERTING: check a subprogram's signature, a type's components, or who calls
 something with these tools before stating it or editing code that depends on it.
-"unresolved" and "[approximate]" in a result are unknowns: say so, do not fill them in.
-Every location is path:line relative to the workspace root; quote declaration text as shown.
-Prefer outline / package_files / goto_definition over reading whole files.
+"unresolved" / "[approximate]" mean unknown: say so, never fill the gap with a guess.
+Locations are path:line relative to the workspace; quote declaration text exactly as shown.
+Which tool: file of a unit -> find_unit; files of a package -> package_files;
+what is declared in a unit -> outline (instead of reading the file); what a name at
+file:line:col is -> goto_definition; who uses it -> find_references; anything else ->
+run_lal (check names with api_help, see node shapes with dump).
+run_lal: Python with lal, ctx, prj, unit(name_or_path), units(), rel(node) -> "path:line";
+the value of a final expression is printed. f_xxx = syntax child, p_xxx = semantic property
+(may raise lal.PropertyError; some take arguments, e.g. p_referenced_decl()).
+  # subprograms declared in a unit
+  for d in unit("Pkg").root.findall(lal.BasicSubpDecl): print(rel(d), d.p_defining_name.text)
+  # what the name at line 42, column 7 of a file refers to
+  n = unit("src/x.adb").root.lookup(lal.Sloc(42, 7)); print(rel(n.p_referenced_decl()))
+  # callers of Pkg.Op
+  dn = unit("Pkg").root.find(lambda n: n.is_a(lal.DefiningName) and n.text == "Op")
+  for r in dn.p_find_all_calls(units()): print(rel(r.ref), r.kind)
+  # components of record type Pkg.Rec
+  t = unit("Pkg").root.find(lambda n: n.is_a(lal.TypeDecl) and n.p_defining_name.text == "Rec")
+  for c in t.findall(lal.ComponentDecl): print(rel(c), " ".join(c.text.split()))
 """
 
 SESSION: Session | None = None
 
 
-def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query") -> CallToolResult:
+def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query",
+         needs_project: bool = True) -> CallToolResult:
     """Run a tool body against the warm session; every failure becomes an isError result."""
     max_chars = SESSION.cfg.max_chars if SESSION else 8000
     try:
         if SESSION is None:
             raise ToolFailure("server not configured (no project)")
+        if not needs_project:
+            text, is_error = fn(SESSION, *args)
+            return CallToolResult(content=[TextContent(type="text", text=cap(text, max_chars, hint))],
+                                  is_error=is_error)
         SESSION.ensure_loaded()
         text, is_error = SESSION.with_retry(lambda: fn(SESSION, *args))
         if SESSION.load_note:

@@ -22,7 +22,7 @@ def test_initialize_and_list_tools_without_libadalang():
     async def go():
         async with mcp_client(["-P", FIXTURE_GPR], stub="no_lal") as (s, init):
             assert init.server_info.name == "lal-mcp"
-            assert "Verify before asserting" in (init.instructions or "")
+            assert "verify before asserting" in (init.instructions or "").lower()
             tools = (await s.list_tools()).tools
             return init, tools
 
@@ -137,3 +137,20 @@ def test_server_survives_missing_path_env():
     finally:
         p.stdin.close()
         p.wait(timeout=30)
+
+
+@pytest.mark.skipif(not __import__("conftest").have_libadalang(), reason="libadalang not importable")
+def test_run_lal_over_stdio_timeout_and_fd1_writes():
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR, "--timeout", "2"]) as (s, _):
+            r1 = await s.call_tool("run_lal", {"code": "while True:\n    pass"})
+            r2 = await s.call_tool("run_lal", {"code": "import os\nos.write(1, b'RAW FD1 WRITE' + bytes([10]))\nprint('ok')"})
+            r3 = await s.call_tool("run_lal", {"code": 'rel(unit("Vehicle").root)'})
+            r4 = await s.call_tool("api_help", {"name": "WithClause"})
+            return r1, r2, r3, r4
+
+    r1, r2, r3, r4 = run(go)
+    assert r1.is_error and "timed out after 2s" in r1.content[0].text
+    assert not r2.is_error and r2.content[0].text.strip() == "ok"
+    assert r3.content[0].text.strip() == "'src/vehicle.1.ada:2'"
+    assert not r4.is_error
