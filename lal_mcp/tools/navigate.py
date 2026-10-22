@@ -76,10 +76,31 @@ def resolve(sess: Session, loc: Located):
             if dn is not None:
                 approx = "imprecise fallback"
         if dn is None:
+            why = _no_declaration_reason(lal, loc.id_node)
+            if why and not err:
+                return None, f"no declaration: {loc.full_name} at {loc.where} is {why}"
             return None, f"unresolved: {loc.full_name} at {loc.where}" + (f" ({err})" if err else "")
     if sess.has_errors(loc.unit):
         approx = (approx + "; " if approx else "") + "file has parse errors"
     return dn, approx
+
+
+def _no_declaration_reason(lal, node) -> str | None:
+    """Names that legitimately have no source declaration to go to."""
+    p = node.parent
+    if p is not None and p.is_a(lal.AttributeRef) and p.f_attribute == node:
+        return "a language-defined attribute"
+    if p is not None and p.is_a(lal.PragmaNode) and p.f_id == node:
+        return "a pragma name"
+    if p is not None and p.is_a(lal.AspectAssoc) and p.f_id == node:
+        return "an aspect name"
+    if node.is_a(lal.Op):
+        return "a predefined operator (no user-defined overload matched)"
+    if node.is_a(lal.StringLiteral):
+        return "a string literal"
+    if node.is_a(lal.CharLiteral):
+        return "a character literal"
+    return None
 
 
 def _part_label(lal, part) -> str:
@@ -103,11 +124,12 @@ def _decl_text(lal, decl) -> str:
     return capped_lines(dedent_block(decl.text, col))
 
 
-def _qualified(decl) -> str:
+def _qualified(dn) -> str:
+    """Fully qualified name of a DefiningName (works for `A, B : T` declarations too)."""
     try:
-        return decl.p_fully_qualified_name
+        return dn.p_fully_qualified_name
     except Exception:
-        return decl.p_defining_name.text
+        return dn.text
 
 
 def goto_definition(sess: Session, file: str, line: int, column: int) -> tuple[str, bool]:
@@ -121,7 +143,7 @@ def goto_definition(sess: Session, file: str, line: int, column: int) -> tuple[s
     out = []
     if approx:
         out.append(f"[approximate: {approx}]")
-    out.append(f"{_qualified(decl)}  [{decl.kind_name}]")
+    out.append(f"{_qualified(dn)}  [{decl.kind_name}]")
     if decl.unit.filename.endswith("__standard") or not decl.unit.filename:
         out.append("predefined in package Standard")
         out.append(one_line(decl.text))
@@ -130,7 +152,7 @@ def goto_definition(sess: Session, file: str, line: int, column: int) -> tuple[s
     out.append(_decl_text(lal, decl))
     try:
         parts = list(decl.p_all_parts())
-    except lal.PropertyError:
+    except Exception:  # PropertyError / precondition failures on multi-name decls
         parts = [decl]
     others = [p for p in parts if p != decl]
     if others:
@@ -154,7 +176,7 @@ def find_references(sess: Session, file: str, line: int, column: int, limit: int
     try:
         refs = list(dn.p_find_all_references(units))
     except lal.PropertyError as exc:
-        return f"error: reference search failed for {_qualified(decl)}: {last_line(exc)}", True
+        return f"error: reference search failed for {_qualified(dn)}: {last_line(exc)}", True
     rows, n_imprecise, n_err, n_skipped = [], 0, 0, 0
     for r in refs:
         kind = str(r.kind)
@@ -183,7 +205,7 @@ def find_references(sess: Session, file: str, line: int, column: int, limit: int
         rows.append((sess.rel(node.unit.filename), ln, f"{sess.rel(node.unit.filename)}:{ln}: "
                      f"{one_line(sess.line_text(node.unit, ln), 140)}{tag}"))
     rows.sort(key=lambda t: (t[0], t[1]))
-    head = f"references to {_qualified(decl)} ({sess.loc(decl)}): {len(rows)}"
+    head = f"references to {_qualified(dn)} ({sess.loc(dn)}): {len(rows)}"
     notes = []
     if n_imprecise or n_err:
         notes.append(f"{n_imprecise} imprecise, {n_err} with resolution errors")

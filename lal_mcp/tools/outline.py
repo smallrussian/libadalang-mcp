@@ -148,7 +148,7 @@ def outline(sess: Session, target: str) -> tuple[str, bool]:
         if withs:
             out.append("with: " + ", ".join(withs))
         width = len(str(max((r[0] for r in o.rows), default=1)))
-        for line, depth, text in o.rows:
+        for line, depth, text in sorted(o.rows, key=lambda r: r[0]):  # stable: keeps nesting order per line
             out.append(f"{line:>{width}}  {'  ' * depth}{text}")
     if note:
         out.append(note)
