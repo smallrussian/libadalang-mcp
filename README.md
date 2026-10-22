@@ -20,7 +20,7 @@ Primary client: OpenAI Codex CLI. Works with any MCP client (Claude Code etc.).
 ## Tools
 
 | tool | answers |
-|---|---|
+| --- | --- |
 | `find_unit(name)` | spec/body files of a unit (GPR naming scheme aware) |
 | `package_files(name, children, deps, specs_only)` | spec, body, `separate` subunits, child units, optional dependency closure |
 | `outline(target)` | declarations with line numbers and signatures, no bodies |
@@ -32,6 +32,18 @@ Primary client: OpenAI Codex CLI. Works with any MCP client (Claude Code etc.).
 
 The server's `instructions` (sent at `initialize`) carry a short cheat sheet and
 the verify-before-asserting rule.
+
+## How well it works
+
+On [gnatcoll-core](https://github.com/AdaCore/gnatcoll-core), checked against
+the GNAT compiler's own cross-references:
+
+- `goto_definition` resolves 99.9% of 43,842 references to the same entity GNAT does.
+- `find_references` has 100% recall and 99.9% precision.
+
+Answers are 80–800× smaller than the files they replace. Details, a Claude A/B
+comparison with and without the tools, and how to measure your own codebase:
+[`docs/metrics.md`](docs/metrics.md).
 
 ## Requirements
 
@@ -54,21 +66,10 @@ Libadalang isn't on PyPI. The GNAT Pro Libadalang package ships a Python wheel:
 
 The wheel is **self-contained**: it bundles `libadalang.so` / `libadalang.dll`
 and every library it depends on (GNAT runtime, gnatcoll, gpr2, xmlada). So
-`LD_LIBRARY_PATH` isn't needed for it. Pick one of these two options.
-
-**Option A: pip-install the wheel** into the Python that runs the server:
+`LD_LIBRARY_PATH` isn't needed for it. Install it into the Python that runs the server:
 
 ```bash
 python -m pip install <prefix>/share/libadalang/python/libadalang-*.whl
-```
-
-**Option B: no pip (e.g. air-gapped).** A wheel is a zip file. Unpack it once
-and point `PYTHONPATH` at the directory:
-
-```bash
-python -c "import zipfile,glob,sys; zipfile.ZipFile(glob.glob(sys.argv[1])[0]).extractall(sys.argv[2])" \
-    "<prefix>/share/libadalang/python/libadalang-*.whl" /opt/lal-python
-export PYTHONPATH=/opt/lal-python
 ```
 
 ### PATH must contain GNAT's `bin` directory
@@ -87,8 +88,7 @@ include GNAT, so set `PATH` explicitly.
 Run this with exactly the environment you'll give the MCP client:
 
 ```bash
-env -i HOME="$HOME" PATH="<prefix>/bin:/usr/bin:/bin" PYTHONPATH="<only for option B>" \
-  /path/to/python -c "
+env -i HOME="$HOME" PATH="<prefix>/bin:/usr/bin:/bin" /path/to/python -c "
 import libadalang as lal
 p = lal.GPRProject('/ws/mission.gpr', print_errors=False)
 c = p.create_context()
@@ -114,7 +114,7 @@ python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debu
 ```
 
 | argument | meaning |
-|---|---|
+| --- | --- |
 | `-P`, `--project` | root `.gpr` file (required). Your existing project is used as is. |
 | `-w`, `--workspace` | root for relative paths in answers (default: the project's directory) |
 | `-X VAR=VALUE` | scenario variable, repeatable (`-XBUILD=debug` also works) |
@@ -130,7 +130,7 @@ stderr; stdout carries only the protocol.
 ## Codex configuration
 
 Codex starts MCP servers with a reduced environment, not your full shell
-environment, so put `PATH` (and `PYTHONPATH` for option B) in `env`.
+environment, so put `PATH` in `env`.
 
 ```toml
 # ~/.codex/config.toml
@@ -147,7 +147,6 @@ wire_api = "responses"   # or "chat" — whatever the proxy supports
 command = "/path/to/python"            # the Python that can import libadalang
 args = ["/path/to/lal-mcp/lal_mcp/server.py", "-P", "/ws/mission.gpr", "-w", "/ws", "-XBUILD=debug"]
 env = { PATH = "/opt/gnatpro/26.1/bin:/usr/bin:/bin" }
-# option B instead of pip:  env = { PATH = "...", PYTHONPATH = "/opt/lal-python" }
 startup_timeout_sec = 30
 tool_timeout_sec = 120
 ```
@@ -164,11 +163,16 @@ Notes:
   of your Ada repositories so Codex prefers these tools and verifies before
   asserting.
 
+## Claude
+
 For Claude Code, the equivalent is:
 
 ```bash
 claude mcp add ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- /path/to/python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws
 ```
+
+[`docs/using-with-claude.md`](docs/using-with-claude.md) covers a shared
+project `.mcp.json`, Claude Desktop, permissions and headless use.
 
 ## Development
 
