@@ -5,10 +5,15 @@ These run without libadalang: a stub package on PYTHONPATH shadows it.
 
 from __future__ import annotations
 
+import json
+import os
+
 import anyio
 import pytest
 
-from conftest import FIXTURE_GPR, mcp_client
+from conftest import FIXTURE_GPR, have_libadalang, mcp_client
+
+needs_lal = pytest.mark.skipif(not have_libadalang(), reason="libadalang not importable")
 
 ALLOWED_TYPES = {"string", "integer", "boolean"}
 FORBIDDEN_KEYS = {"oneOf", "anyOf", "allOf", "$ref", "$defs", "format", "items"}
@@ -96,11 +101,11 @@ def test_bad_cli_args_exit_nonzero():
 
     from conftest import SERVER
 
-    r = subprocess.run([sys.executable, SERVER], stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                       timeout=60)
+    r = subprocess.run([sys.executable, SERVER, "-X", "NO_EQUALS_SIGN"], stdin=subprocess.DEVNULL,
+                       capture_output=True, text=True, timeout=60)
     assert r.returncode != 0
     assert r.stdout == ""  # usage errors go to stderr, never the protocol stream
-    assert "--project" in r.stderr
+    assert "VAR=VALUE" in r.stderr
 
 
 def test_server_survives_missing_path_env():
@@ -154,3 +159,70 @@ def test_run_lal_over_stdio_timeout_and_fd1_writes():
     assert not r2.is_error and r2.content[0].text.strip() == "ok"
     assert r3.content[0].text.strip() == "'src/vehicle.1.ada:2'"
     assert not r4.is_error
+
+
+# ------------------------------------------------- project discovery (no -P)
+
+
+def _write_config(d, extra: str = "") -> None:
+    (d / ".lal-mcp.toml").write_text(f"project = {json.dumps(FIXTURE_GPR)}\n{extra}", encoding="utf-8")
+
+
+def test_not_configured_is_an_error_until_config_appears(tmp_path):
+    async def go():
+        async with mcp_client([], cwd=str(tmp_path), stub="no_lal") as (s, _):
+            r1 = await s.call_tool("find_unit", {"name": "Vehicle"})
+            _write_config(tmp_path)
+            r2 = await s.call_tool("find_unit", {"name": "Vehicle"})  # retried, not cached
+            return r1, r2
+
+    r1, r2 = run(go)
+    assert r1.is_error and "not configured" in r1.content[0].text and ".lal-mcp.toml" in r1.content[0].text
+    assert r2.is_error and "libadalang import failed" in r2.content[0].text  # got past configuration
+
+
+@needs_lal
+def test_config_found_from_server_cwd_subdir(tmp_path):
+    fixture_dir = json.dumps(os.path.dirname(FIXTURE_GPR))
+    _write_config(tmp_path, f'workspace = {fixture_dir}\n[scenario]\nBUILD = "release"\n')
+    sub = tmp_path / "deep" / "er"
+    sub.mkdir(parents=True)
+
+    async def go():
+        async with mcp_client([], cwd=str(sub)) as (s, _):
+            return await s.call_tool("find_unit", {"name": "Vehicle.Engine"})
+
+    r = run(go)
+    text = r.content[0].text
+    assert not r.is_error, text
+    assert text.startswith("[project: fixture.gpr from ") and ".lal-mcp.toml" in text
+    assert "spec     src/vehicle__engine.1.ada" in text
+
+
+@needs_lal
+def test_client_roots_win_over_server_cwd(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    _write_config(proj)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+
+    async def go():
+        async with mcp_client([], cwd=str(elsewhere), roots=[str(proj)]) as (s, _):
+            return await s.call_tool("outline", {"target": "Vehicle"})
+
+    r = run(go)
+    assert not r.is_error, r.content[0].text
+    assert "client workspace root" in r.content[0].text.splitlines()[0]
+
+
+@needs_lal
+def test_single_gpr_in_root_is_used_and_announced():
+    async def go():
+        async with mcp_client([], cwd=os.path.dirname(FIXTURE_GPR)) as (s, _):
+            return await s.call_tool("find_unit", {"name": "Utils"})
+
+    r = run(go)
+    first = r.content[0].text.splitlines()[0]
+    assert not r.is_error
+    assert "the only .gpr" in first and "no .lal-mcp.toml" in first

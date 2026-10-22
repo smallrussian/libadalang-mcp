@@ -27,14 +27,23 @@ def server_env(stub: str | None = None, drop: tuple[str, ...] = ()) -> dict[str,
 
 
 @asynccontextmanager
-async def mcp_client(args: list[str], stub: str | None = None):
+async def mcp_client(args: list[str], stub: str | None = None, cwd: str = ROOT, roots: list[str] | None = None):
+    """Spawn the server and connect. `roots`: local dirs the client reports as MCP roots."""
+    import pathlib
+
+    import mcp_types as types
     from mcp.client.session import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
-    params = StdioServerParameters(command=sys.executable, args=[SERVER, *args], env=server_env(stub), cwd=ROOT)
+    callback = None
+    if roots is not None:
+        async def callback(context):
+            return types.ListRootsResult(roots=[types.Root(uri=pathlib.Path(r).as_uri()) for r in roots])
+
+    params = StdioServerParameters(command=sys.executable, args=[SERVER, *args], env=server_env(stub), cwd=cwd)
     with open(os.devnull, "w") as devnull:
         async with stdio_client(params, errlog=devnull) as (read, write):
-            async with ClientSession(read, write) as session:
+            async with ClientSession(read, write, list_roots_callback=callback) as session:
                 init = await session.initialize()
                 yield session, init
 

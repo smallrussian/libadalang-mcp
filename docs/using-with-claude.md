@@ -11,19 +11,22 @@ any file.
 
 ## Claude Code
 
-One command, per project (the `local` scope is the default):
+Each Ada repository names its project in a committed `.lal-mcp.toml` (see the
+README's "Project settings"), so a single user-level entry covers all of them:
 
 ```bash
-claude mcp add ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- \
-    /path/to/python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debug
+claude mcp add --scope user ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- \
+    /path/to/python /path/to/lal-mcp/lal_mcp/server.py
 ```
 
 Windows:
 
 ```powershell
-claude mcp add ada -e "PATH=C:\GNATPRO\26.1\bin;C:\Windows\system32;C:\Windows" -- `
-    C:\path\to\python.exe C:\path\to\lal-mcp\lal_mcp\server.py -P C:\ws\mission.gpr -w C:\ws
+claude mcp add --scope user ada -e "PATH=C:\GNATPRO\26.1\bin;C:\Windows\system32;C:\Windows" -- `
+    C:\path\to\python.exe C:\path\to\lal-mcp\lal_mcp\server.py
 ```
+
+`-P`, `-X` etc. still work if you prefer an explicit, per-project entry.
 
 To share it with the team, commit a `.mcp.json` at the root of the Ada
 repository (`claude mcp add --scope project ...` writes the same file).
@@ -36,7 +39,7 @@ their own paths:
     "ada": {
       "type": "stdio",
       "command": "${LAL_MCP_PYTHON}",
-      "args": ["${LAL_MCP_HOME}/lal_mcp/server.py", "-P", "mission.gpr", "-w", ".", "-XBUILD=debug"],
+      "args": ["${LAL_MCP_HOME}/lal_mcp/server.py"],
       "env": { "PATH": "${GNATPRO_PREFIX}/bin:/usr/bin:/bin" }
     }
   }

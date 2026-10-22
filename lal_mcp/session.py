@@ -120,7 +120,7 @@ class Session:
         if self.project_errors:
             shown = "\n  ".join(self.project_errors[:5])
             more = f"\n  ... {len(self.project_errors) - 5} more" if len(self.project_errors) > 5 else ""
-            self.load_note = (
+            self.load_note = (self.load_note or "") + (
                 f"[project warnings, results may be incomplete]\n  {shown}{more}\n"
                 "  (\"can't find a toolchain\" means the GNAT bin directory is not on the server's PATH,"
                 " so runtime units such as Ada.Text_IO will not resolve)\n"

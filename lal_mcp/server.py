@@ -1,9 +1,11 @@
 """lal-mcp: stdio MCP server exposing Libadalang for an Ada codebase.
 
-Run as `python lal_mcp/server.py -P project.gpr ...` or `python -m lal_mcp ...`.
-Libadalang is imported lazily on the first tools/call, and `main()` moves fd 1
-out of the way before anything else, so native Libadalang/GPR code can never
-write into the JSON-RPC stream.
+Run as `python lal_mcp/server.py [-P project.gpr ...]` or `python -m lal_mcp ...`.
+Without -P, the project comes from a `.lal-mcp.toml` in the client's workspace
+(see lal_mcp/discovery.py), so one global MCP entry works in every repository.
+The project is resolved and Libadalang imported lazily on the first tools/call,
+and `main()` moves fd 0/1 out of the way before anything else, so native
+Libadalang/GPR code can never touch the JSON-RPC stream.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.stdio import stdio_server
 from mcp_types import CallToolResult, TextContent
 
+from lal_mcp import discovery
 from lal_mcp.session import Config, Session, ToolFailure, cap, last_line
 from lal_mcp.stdio_guard import protect_stdio
 
@@ -53,20 +56,62 @@ the value of a final expression is printed. f_xxx = syntax child, p_xxx = semant
   for c in t.findall(lal.ComponentDecl): print(rel(c), " ".join(c.text.split()))
 """
 
+CLI = discovery.CliSettings()
 SESSION: Session | None = None
+
+
+async def _client_roots(ctx) -> list[str]:
+    """Local paths of the client's MCP roots, if it supports roots."""
+    try:
+        caps = ctx.client_capabilities if ctx is not None else None
+        if caps is None or caps.roots is None:
+            return []
+        with anyio.fail_after(5):
+            res = await ctx.session.list_roots()
+        return [p for r in res.roots if (p := discovery.uri_to_path(str(r.uri)))]
+    except Exception as exc:  # a client that declares roots but fails to answer
+        log.warning("roots/list failed: %s", last_line(exc))
+        return []
+
+
+async def prepare(ctx) -> None:
+    """Pick the project on the first tool call. ConfigError is not cached: fixing the
+    config (e.g. adding .lal-mcp.toml) takes effect on the next call."""
+    global SESSION
+    if SESSION is not None:
+        return
+    roots = [] if CLI.project or CLI.config else await _client_roots(ctx)
+    r = discovery.resolve(CLI, roots, os.getcwd())
+    sess = Session(Config(project=r.project, workspace=r.workspace, scenario=r.scenario, target=r.target,
+                          runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout))
+    if not CLI.project:
+        sess.load_note = f"[project: {r.source}]\n"
+    log.info("project %s, workspace %s, scenario %s", r.project, r.workspace, r.scenario)
+    SESSION = sess
+
+
+async def run(ctx, fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query",
+              needs_project: bool = True) -> CallToolResult:
+    """Tool entry point: resolve the project if needed, then run the tool body."""
+    if needs_project:
+        try:
+            await prepare(ctx)
+        except discovery.ConfigError as exc:
+            return CallToolResult(content=[TextContent(type="text", text=f"not configured: {exc}")], is_error=True)
+    return call(fn, *args, hint=hint, needs_project=needs_project)
 
 
 def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query",
          needs_project: bool = True) -> CallToolResult:
     """Run a tool body against the warm session; every failure becomes an isError result."""
-    max_chars = SESSION.cfg.max_chars if SESSION else 8000
+    max_chars = SESSION.cfg.max_chars if SESSION else discovery.DEFAULT_MAX_CHARS
     try:
-        if SESSION is None:
-            raise ToolFailure("server not configured (no project)")
         if not needs_project:
             text, is_error = fn(SESSION, *args)
             return CallToolResult(content=[TextContent(type="text", text=cap(text, max_chars, hint))],
                                   is_error=is_error)
+        if SESSION is None:
+            raise ToolFailure("server not configured (no project)")
         SESSION.ensure_loaded()
         text, is_error = SESSION.with_retry(lambda: fn(SESSION, *args))
         if SESSION.load_note:
@@ -83,20 +128,23 @@ def build_app() -> MCPServer:
     from lal_mcp.tools import register
 
     app = MCPServer(name="lal-mcp", instructions=INSTRUCTIONS, version="0.1.0")
-    register(app, call)
+    register(app, run)
     return app
 
 
-def parse_args(argv: list[str] | None = None) -> Config:
-    p = argparse.ArgumentParser(prog="lal-mcp", description="Libadalang MCP server (stdio)")
-    p.add_argument("-P", "--project", required=True, help="root .gpr project file")
-    p.add_argument("-w", "--workspace", help="workspace root for relative paths (default: project dir)")
+def parse_args(argv: list[str] | None = None) -> discovery.CliSettings:
+    p = argparse.ArgumentParser(
+        prog="lal-mcp", description="Libadalang MCP server (stdio)",
+        epilog="Without -P/--config the project comes from .lal-mcp.toml in the client's workspace.")
+    p.add_argument("-P", "--project", help="root .gpr project file (default: from .lal-mcp.toml)")
+    p.add_argument("--config", help="a .lal-mcp.toml to use instead of searching for one")
+    p.add_argument("-w", "--workspace", help="workspace root for relative paths")
     p.add_argument("-X", dest="scenario", action="append", default=[], metavar="VAR=VALUE",
-                   help="scenario variable (repeatable)")
+                   help="scenario variable (repeatable; overrides the config file)")
     p.add_argument("--target", help="GPR target")
     p.add_argument("--RTS", dest="runtime", help="Ada runtime")
-    p.add_argument("--max-chars", type=int, default=8000, help="hard cap per response (default 8000)")
-    p.add_argument("--timeout", type=int, default=20, help="run_lal timeout in seconds (default 20)")
+    p.add_argument("--max-chars", type=int, help=f"hard cap per response (default {discovery.DEFAULT_MAX_CHARS})")
+    p.add_argument("--timeout", type=int, help=f"run_lal timeout in seconds (default {discovery.DEFAULT_TIMEOUT})")
     p.add_argument("--log-level", default="INFO", help="stderr log level")
     a = p.parse_args(argv)
     scenario: dict[str, str] = {}
@@ -107,8 +155,8 @@ def parse_args(argv: list[str] | None = None) -> Config:
         scenario[k] = v
     logging.basicConfig(stream=sys.stderr, level=a.log_level.upper(),
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    return Config(project=a.project, workspace=a.workspace, scenario=scenario, target=a.target,
-                  runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
+    return discovery.CliSettings(project=a.project, config=a.config, workspace=a.workspace, scenario=scenario,
+                                 target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
 
 
 async def _serve(app: MCPServer, wire_in, wire_out) -> None:
@@ -119,12 +167,12 @@ async def _serve(app: MCPServer, wire_in, wire_out) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    global SESSION
+    global CLI
     wire_in, wire_out = protect_stdio()  # first: native code must never touch the real pipes
-    cfg = parse_args(argv)
-    SESSION = Session(cfg)
+    CLI = parse_args(argv)
     app = build_app()
-    log.info("lal-mcp starting: project=%s workspace=%s (lazy load)", SESSION.project_path, SESSION.workspace)
+    log.info("lal-mcp starting: project %s, cwd %s (resolved on first tool call)",
+             CLI.project or CLI.config or "from .lal-mcp.toml", os.getcwd())
     anyio.run(_serve, app, wire_in, wire_out)
 
 

@@ -47,7 +47,7 @@ comparison with and without the tools, and how to measure your own codebase:
 
 ## Requirements
 
-- Python 3.10+ (tested with 3.12 on Linux and 3.14 on Windows).
+- Python 3.11+ (tested with 3.12 on Linux and 3.14 on Windows).
 - `pip install -r requirements.txt` (`mcp==2.3.0`, plus `pytest` for the tests).
 - GNAT Pro and Libadalang from AdaCore, same release (tested with 26.1). Use the
   **x86_64** packages on 64-bit Linux. The `x86-linux` packages are 32-bit and
@@ -107,30 +107,74 @@ ls "<prefix>"/share/libadalang/python/               # the wheel
 python -c "import libadalang; print(libadalang.__file__)"   # where Python finds it
 ```
 
+## Project settings: `.lal-mcp.toml`
+
+Each Ada repository says which GPR project to load in a small file at its
+root, committed with the code. The MCP client configuration then has no
+project-specific arguments, and one global entry works in every repository.
+
+```toml
+# .lal-mcp.toml (paths are relative to this file)
+project = "build/mission.gpr"   # required: your existing root project, used as is
+# workspace = "."               # root for relative paths in answers (default: this file's directory)
+# target = "x86_64-linux"       # GPR target / runtime, if the project needs them
+# runtime = "light"
+# max_chars = 8000              # per-response cap
+# timeout = 20                  # run_lal seconds
+
+[scenario]                      # -X scenario variables
+BUILD = "debug"
+```
+
+A commented copy is in [`docs/lal-mcp.example.toml`](docs/lal-mcp.example.toml).
+
+On its first tool call, the server picks the project in this order:
+
+1. `-P` / `--config` given to the server (they still work, and override everything);
+2. the nearest `.lal-mcp.toml`, searching upward from the client's workspace;
+3. the only `.gpr` file at the workspace root, if there is exactly one,
+   with GPR default scenario values. With several `.gpr` files or none, the tool
+   returns an error listing what it found.
+
+The "client's workspace" is the folder the client reports through MCP roots.
+If the client reports none, it's the directory the server was started in. So
+for clients without roots support, start them from inside the repository.
+
+The first answer begins with a line like
+`[project: mission.gpr from /ws/.lal-mcp.toml (found from ...)]`, so you can
+see which project was picked. A missing or broken config file is an error
+result, not a crash, and fixing the file takes effect on the next call, without
+a restart. `-X`, `--target`, `--RTS`, `--max-chars` and `--timeout` on the
+command line override the file.
+
 ## Running the server
 
 ```
-python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debug
+python /path/to/lal-mcp/lal_mcp/server.py            # project from .lal-mcp.toml
+python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debug   # or explicit
 ```
 
 | argument | meaning |
 | --- | --- |
-| `-P`, `--project` | root `.gpr` file (required). Your existing project is used as is. |
-| `-w`, `--workspace` | root for relative paths in answers (default: the project's directory) |
+| `-P`, `--project` | root `.gpr` file. Default: from `.lal-mcp.toml` |
+| `--config` | a specific `.lal-mcp.toml` to use instead of searching |
+| `-w`, `--workspace` | root for relative paths in answers |
 | `-X VAR=VALUE` | scenario variable, repeatable (`-XBUILD=debug` also works) |
 | `--target`, `--RTS` | GPR target and runtime, if the project needs them |
 | `--max-chars` | hard cap per response (default 8000) |
 | `--timeout` | `run_lal` time limit in seconds (default 20) |
 | `--log-level` | log level for stderr (default INFO) |
 
-`initialize` is answered immediately. The project is loaded on the first tool
-call and kept warm. Files are re-parsed when their mtime changes. Logs go to
-stderr; stdout carries only the protocol.
+`initialize` is answered immediately. The project is chosen and loaded on the
+first tool call, then kept warm. Files are re-parsed when their mtime changes.
+Logs go to stderr; stdout carries only the protocol.
 
 ## Codex configuration
 
-Codex starts MCP servers with a reduced environment, not your full shell
-environment, so put `PATH` in `env`.
+One global entry for all repositories. The project comes from each repo's
+`.lal-mcp.toml`, so run `codex` from inside the repository. Codex starts MCP
+servers with a reduced environment, not your full shell environment, so put
+`PATH` in `env`.
 
 ```toml
 # ~/.codex/config.toml
@@ -145,7 +189,7 @@ wire_api = "responses"   # or "chat" — whatever the proxy supports
 
 [mcp_servers.ada]
 command = "/path/to/python"            # the Python that can import libadalang
-args = ["/path/to/lal-mcp/lal_mcp/server.py", "-P", "/ws/mission.gpr", "-w", "/ws", "-XBUILD=debug"]
+args = ["/path/to/lal-mcp/lal_mcp/server.py"]   # project: from the repo's .lal-mcp.toml
 env = { PATH = "/opt/gnatpro/26.1/bin:/usr/bin:/bin" }
 startup_timeout_sec = 30
 tool_timeout_sec = 120
@@ -165,10 +209,11 @@ Notes:
 
 ## Claude
 
-For Claude Code, the equivalent is:
+For Claude Code, the equivalent is one user-level entry for all repositories,
+with the project again coming from each repo's `.lal-mcp.toml`:
 
 ```bash
-claude mcp add ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- /path/to/python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws
+claude mcp add --scope user ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- /path/to/python /path/to/lal-mcp/lal_mcp/server.py
 ```
 
 [`docs/using-with-claude.md`](docs/using-with-claude.md) covers a shared

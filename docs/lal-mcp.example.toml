@@ -1,0 +1,27 @@
+# .lal-mcp.toml: tells lal-mcp which GPR project this repository uses.
+#
+# Copy to the root of your Ada repository as `.lal-mcp.toml` (or `lal-mcp.toml`)
+# and commit it. The server finds it by searching upward from the client's
+# workspace, so the MCP client config (Codex, Claude Code) needs no
+# project-specific arguments. Paths are relative to this file.
+# Unknown keys are an error, so typos are reported, not ignored.
+
+# Required: the root project file you already build with. It's used as is;
+# lal-mcp never writes or generates .gpr files.
+project = "mission.gpr"
+
+# Root for the relative paths in tool answers. Default: this file's directory.
+# workspace = "."
+
+# GPR target and runtime, if your gprbuild command line passes --target / --RTS.
+# target = "x86_64-linux"
+# runtime = "light"
+
+# Per-response size cap (characters) and run_lal time limit (seconds).
+# max_chars = 8000
+# timeout = 20
+
+# Scenario variables: the -X VAR=VALUE you pass to gprbuild.
+# Values given with -X on the server's command line override these.
+[scenario]
+# BUILD = "debug"
