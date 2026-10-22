@@ -132,10 +132,11 @@ def build_app() -> MCPServer:
     return app
 
 
-def parse_args(argv: list[str] | None = None) -> discovery.CliSettings:
+def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, argparse.Namespace]:
     p = argparse.ArgumentParser(
-        prog="lal-mcp", description="Libadalang MCP server (stdio)",
-        epilog="Without -P/--config the project comes from .lal-mcp.toml in the client's workspace.")
+        prog="lal-mcp", description="Libadalang MCP server (stdio, or streamable HTTP with --http)",
+        epilog="Without -P/--config the project comes from .lal-mcp.toml: in stdio mode searched from the "
+               "client's workspace, in --http mode from the directory the server is started in.")
     p.add_argument("-P", "--project", help="root .gpr project file (default: from .lal-mcp.toml)")
     p.add_argument("--config", help="a .lal-mcp.toml to use instead of searching for one")
     p.add_argument("-w", "--workspace", help="workspace root for relative paths")
@@ -146,7 +147,22 @@ def parse_args(argv: list[str] | None = None) -> discovery.CliSettings:
     p.add_argument("--max-chars", type=int, help=f"hard cap per response (default {discovery.DEFAULT_MAX_CHARS})")
     p.add_argument("--timeout", type=int, help=f"run_lal timeout in seconds (default {discovery.DEFAULT_TIMEOUT})")
     p.add_argument("--log-level", default="INFO", help="stderr log level")
+    h = p.add_argument_group("HTTP mode (the client connects by URL instead of launching the server)")
+    h.add_argument("--http", action="store_true", help="serve streamable HTTP at http://HOST:PORT/mcp")
+    h.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    h.add_argument("--port", type=int, default=8765, help="port (default 8765)")
+    h.add_argument("--token-env", metavar="NAME",
+                   help="require 'Authorization: Bearer <token>', token read from env var NAME; "
+                        "mandatory when --host is not a loopback address")
     a = p.parse_args(argv)
+    if a.http:
+        from lal_mcp.http_server import is_loopback
+
+        if a.token_env and not os.environ.get(a.token_env):
+            p.error(f"--token-env {a.token_env}: environment variable is not set or empty")
+        if not is_loopback(a.host) and not a.token_env:
+            p.error(f"--host {a.host} is reachable from other machines and run_lal executes Python; "
+                    "add --token-env NAME (or bind 127.0.0.1)")
     scenario: dict[str, str] = {}
     for item in a.scenario:
         if "=" not in item:
@@ -155,8 +171,9 @@ def parse_args(argv: list[str] | None = None) -> discovery.CliSettings:
         scenario[k] = v
     logging.basicConfig(stream=sys.stderr, level=a.log_level.upper(),
                         format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    return discovery.CliSettings(project=a.project, config=a.config, workspace=a.workspace, scenario=scenario,
-                                 target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
+    cli = discovery.CliSettings(project=a.project, config=a.config, workspace=a.workspace, scenario=scenario,
+                                target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
+    return cli, a
 
 
 async def _serve(app: MCPServer, wire_in, wire_out) -> None:
@@ -167,13 +184,34 @@ async def _serve(app: MCPServer, wire_in, wire_out) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    global CLI
+    global CLI, SESSION
     wire_in, wire_out = protect_stdio()  # first: native code must never touch the real pipes
-    CLI = parse_args(argv)
+    CLI, opts = parse_args(argv)
     app = build_app()
-    log.info("lal-mcp starting: project %s, cwd %s (resolved on first tool call)",
-             CLI.project or CLI.config or "from .lal-mcp.toml", os.getcwd())
-    anyio.run(_serve, app, wire_in, wire_out)
+    if not opts.http:
+        log.info("lal-mcp starting (stdio): project %s, cwd %s (resolved on first tool call)",
+                 CLI.project or CLI.config or "from .lal-mcp.toml", os.getcwd())
+        anyio.run(_serve, app, wire_in, wire_out)
+        return
+
+    # HTTP mode: one long-lived server per project, so resolve and load it up front
+    # (no client roots to search from, and no client startup timeout to respect).
+    from lal_mcp.http_server import serve
+
+    try:
+        r = discovery.resolve(CLI, [], os.getcwd())
+    except discovery.ConfigError as exc:
+        log.error("not configured: %s", exc)
+        sys.exit(2)
+    SESSION = Session(Config(project=r.project, workspace=r.workspace, scenario=r.scenario, target=r.target,
+                             runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout))
+    log.info("project: %s", r.source)
+    try:
+        SESSION.ensure_loaded()  # fail fast and make the first query quick
+    except ToolFailure as exc:
+        log.error("%s", exc)  # e.g. libadalang import failed; keep serving so tool calls report it
+    token = os.environ.get(opts.token_env) if opts.token_env else None
+    anyio.run(serve, app, opts.host, opts.port, token, opts.log_level)
 
 
 if __name__ == "__main__":

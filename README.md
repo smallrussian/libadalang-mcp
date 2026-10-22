@@ -164,6 +164,7 @@ python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debu
 | `--max-chars` | hard cap per response (default 8000) |
 | `--timeout` | `run_lal` time limit in seconds (default 20) |
 | `--log-level` | log level for stderr (default INFO) |
+| `--http`, `--host`, `--port`, `--token-env` | serve over HTTP instead of stdio; see [HTTP mode](#http-mode-the-client-connects-instead-of-launching) |
 
 `initialize` is answered immediately. The project is chosen and loaded on the
 first tool call, then kept warm. Files are re-parsed when their mtime changes.
@@ -206,6 +207,64 @@ Notes:
 - Copy [`docs/AGENTS-snippet.md`](docs/AGENTS-snippet.md) into the `AGENTS.md`
   of your Ada repositories so Codex prefers these tools and verifies before
   asserting.
+- If Codex's sandbox won't start the server ("Access is denied (os error 5)" on
+  Windows), use HTTP mode below. Then Codex connects to a server you started
+  yourself, instead of launching Python inside its sandbox.
+
+## HTTP mode (the client connects instead of launching)
+
+By default the client launches the server and talks over stdin/stdout. With
+`--http`, you start the server yourself, as a normal process under your own
+account, and the client connects to it by URL. Use it when the client's sandbox
+can't launch Python, or when you want the project loaded once and kept warm
+across sessions.
+
+Start one server per repository, from the repository root, which picks up its
+`.lal-mcp.toml`. Or pass `-P` / `-X` as usual:
+
+```bash
+cd /ws && PATH=/opt/gnatpro/26.1/bin:$PATH python /path/to/lal-mcp/lal_mcp/server.py --http --port 8765
+```
+
+```powershell
+cd C:\src\mission; $env:PATH = "C:\GNATPRO\26.1\bin;$env:PATH"; python C:\path\to\lal-mcp\lal_mcp\server.py --http --port 8765
+```
+
+The project is resolved and loaded at startup. A missing or broken config stops
+the server with a message. Leave the terminal open; logs go there.
+
+Codex:
+
+```toml
+[mcp_servers.ada]
+url = "http://127.0.0.1:8765/mcp"
+tool_timeout_sec = 120
+```
+
+Claude Code:
+
+```bash
+claude mcp add --transport http ada http://127.0.0.1:8765/mcp
+```
+
+Safety: `run_lal` executes Python in the server, so treat the port like a shell.
+
+- The default `--host 127.0.0.1` accepts local connections only. The MCP SDK
+  also rejects requests whose Host/Origin header isn't localhost (DNS-rebinding
+  protection).
+- `--token-env NAME` makes every request carry `Authorization: Bearer <token>`,
+  with the token read from environment variable `NAME`. Clients send it with
+  `bearer_token_env_var = "NAME"` (Codex) or `-H "Authorization: Bearer ..."`
+  (Claude Code).
+- Binding to anything other than a loopback address (e.g. `--host 0.0.0.0`) is
+  refused unless `--token-env` is given.
+
+| HTTP option | meaning |
+| --- | --- |
+| `--http` | serve streamable HTTP at `http://HOST:PORT/mcp` |
+| `--host` | bind address (default `127.0.0.1`) |
+| `--port` | port (default `8765`) |
+| `--token-env NAME` | require a bearer token, read from env var `NAME` |
 
 ## Claude
 
