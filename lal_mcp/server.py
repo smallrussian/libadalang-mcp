@@ -24,7 +24,7 @@ from mcp.server.stdio import stdio_server
 from mcp_types import CallToolResult, TextContent
 
 from lal_mcp.session import Config, Session, ToolFailure, cap, last_line
-from lal_mcp.stdio_guard import protect_stdout
+from lal_mcp.stdio_guard import protect_stdio
 
 log = logging.getLogger("lal_mcp")
 
@@ -90,21 +90,21 @@ def parse_args(argv: list[str] | None = None) -> Config:
                   runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
 
 
-async def _serve(app: MCPServer, wire) -> None:
-    # Explicit stdout: the transport writes only to our private duplicate of the real stdout.
-    async with stdio_server(stdout=anyio.wrap_file(wire)) as (read_stream, write_stream):
+async def _serve(app: MCPServer, wire_in, wire_out) -> None:
+    # Explicit streams: the transport uses only our private duplicates of the real pipes.
+    async with stdio_server(stdin=anyio.wrap_file(wire_in), stdout=anyio.wrap_file(wire_out)) as (read_stream, write_stream):
         low = app._lowlevel_server  # same as MCPServer.run_stdio_async (mcp==2.3.0)
         await low.run(read_stream, write_stream, low.create_initialization_options())
 
 
 def main(argv: list[str] | None = None) -> None:
     global SESSION
-    wire = protect_stdout()  # first: nothing may write to fd 1 from here on
+    wire_in, wire_out = protect_stdio()  # first: native code must never touch the real pipes
     cfg = parse_args(argv)
     SESSION = Session(cfg)
     app = build_app()
     log.info("lal-mcp starting: project=%s workspace=%s (lazy load)", SESSION.project_path, SESSION.workspace)
-    anyio.run(_serve, app, wire)
+    anyio.run(_serve, app, wire_in, wire_out)
 
 
 if __name__ == "__main__":
