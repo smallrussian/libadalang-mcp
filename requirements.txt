@@ -1,0 +1,6 @@
+# Runtime
+mcp==2.3.0
+# Tests
+pytest==9.1.1
+# libadalang is not on PyPI: it comes from the GNAT Pro install
+# (share/libadalang/python/*.whl), see README.
