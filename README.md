@@ -26,6 +26,8 @@ Primary client: OpenAI Codex CLI. Works with any MCP client (Claude Code etc.).
 | `outline(target)` | declarations with line numbers and signatures, no bodies |
 | `goto_definition(file, line, column)` | the declaration a name resolves to, its text, its other parts (body, stub) |
 | `find_references(file, line, column, limit)` | `path:line: source line` for every reference in the project |
+| `link_info(name, deps)` | build/link closure: `pragma Import`/`Export` symbols and the C/C++ source or library defining them, owning GPR projects (`with`s needed), linker options, missing bodies |
+| `test_model(file, line, column)` | facts for testing a subprogram: parameter ranges and boundary values (modular width), contracts, branches, raises, returns, global state, callees to double, bit operations |
 | `run_lal(code)` | runs a Python snippet with `lal`, `ctx`, `prj`, `unit()`, `units()`, `rel()` preloaded |
 | `api_help(name)` | signature and docs of a Libadalang class or property |
 | `dump(target, start_line, end_line, max_depth)` | syntax tree (node kinds, fields) of a line range |
@@ -206,8 +208,22 @@ Notes:
   and `find_references` loads every unit. Allow well over the `--timeout`
   you give `run_lal`.
 - Copy [`docs/AGENTS-snippet.md`](docs/AGENTS-snippet.md) into the `AGENTS.md`
-  of your Ada repositories so Codex prefers these tools and verifies before
-  asserting.
+  of your Ada repositories. Codex doesn't act on the server's own instructions:
+  without this guidance, it ignored the tools in testing. The snippet adds the
+  verify-before-asserting rule, the uncertainty gate (stop on
+  `[status: INCOMPLETE ...]` / `unresolved` instead of guessing), the build/link
+  rules, and the one-repair failure loop.
+- For test work, copy the skills in [`docs/agents/skills/`](docs/agents/skills/)
+  to the repository's `.agents/skills/` (or `~/.agents/skills/` for all repos):
+  - `ada-unit-tests` writes tests: link closure first, then a semantic test
+    matrix, then independently derived expected values;
+  - `ada-test-runner` prepares and runs tests, and never edits authored tests.
+
+  Codex picks a skill by its description, or you name it explicitly with `$ada-unit-tests`.
+- `link_info` and `test_model` begin with `[status: complete]` or
+  `[status: INCOMPLETE: ...]`, a machine-checkable gate for the workflow.
+  `link_info` uses `gprinspect` and `nm` from GNAT Pro's `bin`, which must be on
+  the server's `PATH` (it already is for the runtime).
 - If Codex's sandbox won't start the server ("Access is denied (os error 5)" on
   Windows), use HTTP mode below. Then Codex connects to a server you started
   yourself, instead of launching Python inside its sandbox. The sandbox can stay
