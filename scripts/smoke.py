@@ -139,7 +139,8 @@ def main() -> None:
 
     if a.gnatcoll:
         root = os.path.abspath(a.gnatcoll)
-        args = ["-P", os.path.join(root, "core", "gnatcoll_core.gpr"), "-w", root, "-XGNATCOLL_OS=windows"]
+        gnatcoll_os = "windows" if sys.platform == "win32" else "unix"
+        args = ["-P", os.path.join(root, "core", "gnatcoll_core.gpr"), "-w", root, f"-XGNATCOLL_OS={gnatcoll_os}"]
         calls = [list(c) for c in GNATCOLL_CALLS]
         # Pick real cursor positions from the sources instead of hardcoding line numbers.
         l, c = find_col(os.path.join(root, "core/src/gnatcoll-json.adb"), r"\b(Write)\s*\(")
