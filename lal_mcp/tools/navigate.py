@@ -85,6 +85,20 @@ def resolve(sess: Session, loc: Located):
     return dn, approx
 
 
+def is_decl_or_end_name(node) -> bool:
+    """True for a declaration part's own name or an `end X;` name, including dotted ones.
+
+    `package body A.B` and `end A.B;` name the entity but are not uses of it.
+    """
+    import libadalang as lal
+
+    top = node
+    while top.parent is not None and top.parent.is_a(lal.DottedName) and top.parent.f_suffix == top:
+        top = top.parent
+    p = top.parent
+    return p is not None and p.is_a(lal.DefiningName, lal.EndName)
+
+
 def _no_declaration_reason(lal, node) -> str | None:
     """Names that legitimately have no source declaration to go to."""
     p = node.parent
@@ -183,14 +197,8 @@ def find_references(sess: Session, file: str, line: int, column: int, limit: int
         if kind.endswith("no_ref"):
             continue
         node = r.ref
-        if node.parent is not None and node.parent.is_a(lal.EndName):
+        if is_decl_or_end_name(node):
             n_skipped += 1
-            continue
-        own = node
-        if own.parent is not None and own.parent.is_a(lal.DottedName) and own.parent.f_suffix == own:
-            own = own.parent
-        if own.parent is not None and own.parent.is_a(lal.DefiningName):
-            n_skipped += 1  # the name of a declaration part itself (spec/body/stub)
             continue
         tag = ""
         if kind.endswith("imprecise"):

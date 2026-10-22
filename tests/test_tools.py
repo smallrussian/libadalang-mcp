@@ -175,3 +175,10 @@ def test_references_limit(s):
 def test_references_unresolved(s):
     text, err = navigate.find_references(s, "src/bad_ref.2.ada", 7, 12, 50)
     assert text.startswith("unresolved:") and not err
+
+
+def test_references_omit_dotted_end_names(s):
+    text, _ = navigate.find_references(s, "src/vehicle__engine.1.ada", 2, 17, 100)
+    assert "end Vehicle.Engine;" not in text
+    assert "package body Vehicle.Engine" not in text
+    assert "src/main_proc.2.ada:2: with Vehicle.Engine;" in text
