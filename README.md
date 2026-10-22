@@ -163,7 +163,8 @@ python /path/to/lal-mcp/lal_mcp/server.py -P /ws/mission.gpr -w /ws -XBUILD=debu
 | `--target`, `--RTS` | GPR target and runtime, if the project needs them |
 | `--max-chars` | hard cap per response (default 8000) |
 | `--timeout` | `run_lal` time limit in seconds (default 20) |
-| `--log-level` | log level for stderr (default INFO) |
+| `--log-level` | `INFO` (default): one line per tool call; `DEBUG`: plus each response; `TRACE`: plus the MCP SDK's protocol logging |
+| `--log-file` | also write the log to this file, e.g. to watch it (see [Debugging](#debugging)) |
 | `--http`, `--host`, `--port`, `--token-env` | serve over HTTP instead of stdio; see [HTTP mode](#http-mode-the-client-connects-instead-of-launching) |
 
 `initialize` is answered immediately. The project is chosen and loaded on the
@@ -209,7 +210,28 @@ Notes:
   asserting.
 - If Codex's sandbox won't start the server ("Access is denied (os error 5)" on
   Windows), use HTTP mode below. Then Codex connects to a server you started
-  yourself, instead of launching Python inside its sandbox.
+  yourself, instead of launching Python inside its sandbox. The sandbox can stay
+  restricted (`read-only`, Windows `unelevated`); full access isn't needed.
+
+### Approvals: why tool calls can seem to hang
+
+Codex asks before running an MCP tool unless the tool declares itself
+read-only. All lal-mcp tools do (MCP `readOnlyHint`), except `run_lal`: it
+executes Python, so it's marked as possibly destructive, and Codex asks before
+each `run_lal` call. If your client doesn't surface Codex's approval prompt (a
+custom VS Code extension, for example), the call just waits, and looks like a
+stall. In `codex exec` with `approval_policy = "never"` it fails instead, with
+"MCP tool call requires approval".
+
+To run `run_lal` without asking too, add this to the server's entry:
+
+```toml
+[mcp_servers.ada]
+default_tools_approval_mode = "approve"   # never ask for this server's tools
+```
+
+Verified with codex-cli 0.163. `"auto"` is *not* enough: it follows the tools'
+annotations, so `run_lal` still asks.
 
 ## HTTP mode (the client connects instead of launching)
 
@@ -239,6 +261,7 @@ Codex:
 [mcp_servers.ada]
 url = "http://127.0.0.1:8765/mcp"
 tool_timeout_sec = 120
+# default_tools_approval_mode = "approve"   # also run run_lal without asking (see Approvals above)
 ```
 
 Claude Code:
@@ -277,6 +300,41 @@ claude mcp add --scope user ada -e PATH=/opt/gnatpro/26.1/bin:/usr/bin:/bin -- /
 
 [`docs/using-with-claude.md`](docs/using-with-claude.md) covers a shared
 project `.mcp.json`, Claude Desktop, permissions and headless use.
+
+## Debugging
+
+Watch what the server does: one log line per tool call, with arguments, time,
+response size and errors.
+
+```powershell
+python lal_mcp\server.py --http --port 8765 --log-level DEBUG --log-file lal-mcp.log
+Get-Content lal-mcp.log -Wait          # in another terminal (Linux: tail -f lal-mcp.log)
+```
+
+```
+... lal_mcp INFO tool goto_definition('core/src/gnatcoll-json.adb', 846, 19) -> 256 chars in 0.05s
+... lal_mcp INFO tool run_lal('print(len(units()))') -> 4 chars in 0.11s
+```
+
+`DEBUG` adds each response's text; `TRACE` adds the MCP SDK's own protocol
+logging (every message, very verbose). If the log shows the client connecting
+(`POST /mcp`, `GET /mcp`) but no `tool ...` lines, the client never sent the
+call. With Codex that usually means an approval prompt is waiting (see
+[Approvals](#approvals-why-tool-calls-can-seem-to-hang)).
+
+**VS Code debugger:** [`.vscode/launch.json`](.vscode/launch.json) has three
+configurations:
+
+- the HTTP server on the test fixture;
+- on an Ada repository (its `.lal-mcp.toml`);
+- on an explicit `.gpr`.
+
+Pick the Python that can import libadalang (*Python: Select Interpreter*),
+start a configuration, point Codex or Claude at `http://127.0.0.1:<port>/mcp`,
+and breakpoints in `lal_mcp/` are hit when the client calls a tool. The
+configurations use `--timeout 0`, because `run_lal`'s time limit on Windows
+uses the same trace hook as the debugger. They log to `lal-mcp-debug.log` in
+this folder.
 
 ## Development
 

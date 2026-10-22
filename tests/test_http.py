@@ -66,8 +66,9 @@ async def http_client(url: str, headers: dict | None = None):
                 yield session
 
 
-def test_http_serves_tools_without_libadalang():
-    with http_server(["-P", FIXTURE_GPR], stub="no_lal") as url:
+def test_http_serves_tools_without_libadalang(tmp_path):
+    log_file = tmp_path / "lal-mcp.log"
+    with http_server(["-P", FIXTURE_GPR, "--log-file", str(log_file)], stub="no_lal") as url:
         async def go():
             async with http_client(url) as s:
                 tools = (await s.list_tools()).tools
@@ -77,6 +78,8 @@ def test_http_serves_tools_without_libadalang():
         tools, r = anyio.run(go)
     assert {t.name for t in tools} >= {"find_unit", "outline", "goto_definition", "run_lal"}
     assert r.is_error and "libadalang import failed" in r.content[0].text
+    log = log_file.read_text(encoding="utf-8")
+    assert "tool find_unit('Vehicle') ->" in log and "[isError]" in log  # one line per tool call
 
 
 @needs_lal

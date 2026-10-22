@@ -226,3 +226,16 @@ def test_single_gpr_in_root_is_used_and_announced():
     first = r.content[0].text.splitlines()[0]
     assert not r.is_error
     assert "the only .gpr" in first and "no .lal-mcp.toml" in first
+
+
+def test_tool_annotations_mark_read_only_and_run_lal():
+    """Clients (e.g. Codex) auto-approve read-only tools; run_lal executes code, so it must not claim that."""
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR], stub="no_lal") as (s, _):
+            return (await s.list_tools()).tools
+
+    ann = {t.name: t.annotations for t in run(go)}
+    assert ann["run_lal"].read_only_hint is False and ann["run_lal"].destructive_hint is True
+    for name, a in ann.items():
+        if name != "run_lal":
+            assert a.read_only_hint is True and a.destructive_hint is False, name

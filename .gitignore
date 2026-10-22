@@ -62,3 +62,4 @@ AdaCore-*.zip
 # --- CI outputs ---
 reports/
 .venv-ci/
+!.vscode/launch.json

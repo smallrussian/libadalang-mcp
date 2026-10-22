@@ -18,6 +18,7 @@ if __package__ in (None, ""):  # run as a script: make `lal_mcp` importable
 
 import argparse
 import logging
+import time
 from typing import Any, Callable
 
 import anyio
@@ -92,13 +93,27 @@ async def prepare(ctx) -> None:
 
 async def run(ctx, fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query",
               needs_project: bool = True) -> CallToolResult:
-    """Tool entry point: resolve the project if needed, then run the tool body."""
+    """Tool entry point: resolve the project if needed, then run the tool body. Logs one line per call."""
+    t0 = time.monotonic()
     if needs_project:
         try:
             await prepare(ctx)
         except discovery.ConfigError as exc:
-            return CallToolResult(content=[TextContent(type="text", text=f"not configured: {exc}")], is_error=True)
-    return call(fn, *args, hint=hint, needs_project=needs_project)
+            result = CallToolResult(content=[TextContent(type="text", text=f"not configured: {exc}")], is_error=True)
+            _log_call(fn, args, result, t0)
+            return result
+    result = call(fn, *args, hint=hint, needs_project=needs_project)
+    _log_call(fn, args, result, t0)
+    return result
+
+
+def _log_call(fn, args: tuple, result: CallToolResult, t0: float) -> None:
+    text = "".join(getattr(c, "text", "") for c in result.content)
+    shown = ", ".join(repr(a) if len(repr(a)) <= 80 else repr(a)[:77] + "..." for a in args)
+    log.info("tool %s(%s) -> %d chars in %.2fs%s", fn.__name__, shown, len(text), time.monotonic() - t0,
+             " [isError]" if result.is_error else "")
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("tool %s response:\n%s", fn.__name__, text[:2000] + ("\n..." if len(text) > 2000 else ""))
 
 
 def call(fn: Callable[..., tuple[str, bool]], *args: Any, hint: str = "narrow the query",
@@ -145,8 +160,13 @@ def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, ar
     p.add_argument("--target", help="GPR target")
     p.add_argument("--RTS", dest="runtime", help="Ada runtime")
     p.add_argument("--max-chars", type=int, help=f"hard cap per response (default {discovery.DEFAULT_MAX_CHARS})")
-    p.add_argument("--timeout", type=int, help=f"run_lal timeout in seconds (default {discovery.DEFAULT_TIMEOUT})")
-    p.add_argument("--log-level", default="INFO", help="stderr log level")
+    p.add_argument("--timeout", type=int,
+                   help=f"run_lal timeout in seconds, 0 = none, e.g. under a debugger (default {discovery.DEFAULT_TIMEOUT})")
+    p.add_argument("--log-level", default="INFO", type=str.upper,
+                   choices=["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
+                   help="INFO (default): one line per tool call; DEBUG: plus each response; "
+                        "TRACE: plus the MCP SDK's own protocol logging")
+    p.add_argument("--log-file", help="also write the log to this file (appended), e.g. to watch it")
     h = p.add_argument_group("HTTP mode (the client connects by URL instead of launching the server)")
     h.add_argument("--http", action="store_true", help="serve streamable HTTP at http://HOST:PORT/mcp")
     h.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
@@ -169,8 +189,16 @@ def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, ar
             p.error(f"-X expects VAR=VALUE, got {item!r}")
         k, v = item.split("=", 1)
         scenario[k] = v
-    logging.basicConfig(stream=sys.stderr, level=a.log_level.upper(),
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
+    if a.log_file:
+        handlers.append(logging.FileHandler(a.log_file, encoding="utf-8"))
+    level = a.log_level.upper()
+    # DEBUG: lal-mcp's own details (each tool response), libraries at INFO.
+    # TRACE: everything, including the MCP SDK's per-message/SSE-chunk logging.
+    logging.basicConfig(level="DEBUG" if level == "TRACE" else ("INFO" if level == "DEBUG" else level),
+                        handlers=handlers, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    if level == "DEBUG":
+        logging.getLogger("lal_mcp").setLevel(logging.DEBUG)
     cli = discovery.CliSettings(project=a.project, config=a.config, workspace=a.workspace, scenario=scenario,
                                 target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
     return cli, a

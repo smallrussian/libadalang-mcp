@@ -1,0 +1,91 @@
+{
+  // Debug lal-mcp in HTTP mode: start one of these, then point Codex / Claude at
+  // http://127.0.0.1:<port>/mcp (see README "HTTP mode"). Breakpoints in lal_mcp/
+  // are hit when the client calls a tool.
+  //
+  // Select the Python interpreter that can `import libadalang` first
+  // (Command Palette > "Python: Select Interpreter"). Needs the Python Debugger extension.
+  //
+  // --timeout 0 turns off run_lal's time limit, which on Windows uses the same
+  // trace hook as the debugger. The log goes to lal-mcp-debug.log in this folder
+  // (git-ignored); watch it with: Get-Content lal-mcp-debug.log -Wait
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "lal-mcp: HTTP, test fixture",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/lal_mcp/server.py",
+      "args": [
+        "--http", "--port", "${input:port}",
+        "-P", "${workspaceFolder}/tests/fixture/fixture.gpr",
+        "--log-level", "DEBUG", "--log-file", "${workspaceFolder}/lal-mcp-debug.log",
+        "--timeout", "0"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "windows": { "env": { "PATH": "${input:gnatBin};${env:PATH}" } },
+      "linux": { "env": { "PATH": "${input:gnatBin}:${env:PATH}" } }
+    },
+    {
+      "name": "lal-mcp: HTTP, an Ada repository (.lal-mcp.toml)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/lal_mcp/server.py",
+      "args": [
+        "--http", "--port", "${input:port}",
+        "--log-level", "DEBUG", "--log-file", "${workspaceFolder}/lal-mcp-debug.log",
+        "--timeout", "0"
+      ],
+      "cwd": "${input:adaRepo}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "windows": { "env": { "PATH": "${input:gnatBin};${env:PATH}" } },
+      "linux": { "env": { "PATH": "${input:gnatBin}:${env:PATH}" } }
+    },
+    {
+      "name": "lal-mcp: HTTP, explicit .gpr",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/lal_mcp/server.py",
+      "args": [
+        "--http", "--port", "${input:port}",
+        "-P", "${input:gprFile}",
+        "--log-level", "DEBUG", "--log-file", "${workspaceFolder}/lal-mcp-debug.log",
+        "--timeout", "0"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "windows": { "env": { "PATH": "${input:gnatBin};${env:PATH}" } },
+      "linux": { "env": { "PATH": "${input:gnatBin}:${env:PATH}" } }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "port",
+      "type": "promptString",
+      "description": "Port for http://127.0.0.1:<port>/mcp",
+      "default": "8765"
+    },
+    {
+      "id": "gnatBin",
+      "type": "promptString",
+      "description": "GNAT Pro bin directory (put on PATH so GPR finds the toolchain and Ada runtime)",
+      "default": "C:\\GNATPRO\\26.1\\bin"
+    },
+    {
+      "id": "adaRepo",
+      "type": "promptString",
+      "description": "Root of the Ada repository (the folder with .lal-mcp.toml)",
+      "default": "C:\\src\\mission"
+    },
+    {
+      "id": "gprFile",
+      "type": "promptString",
+      "description": "Root .gpr project file",
+      "default": "C:\\src\\mission\\mission.gpr"
+    }
+  ]
+}

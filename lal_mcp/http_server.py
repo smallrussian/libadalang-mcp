@@ -57,6 +57,7 @@ async def serve(app, host: str, port: int, token: str | None, log_level: str) ->
     asgi = app.streamable_http_app(host=host)  # the SDK adds DNS-rebinding protection on loopback
     if token:
         asgi = BearerAuth(asgi, token)
-    config = uvicorn.Config(asgi, host=host, port=port, log_level=log_level.lower(), log_config=None)
+    uv_level = {"TRACE": "trace", "DEBUG": "info"}.get(log_level.upper(), log_level.lower())
+    config = uvicorn.Config(asgi, host=host, port=port, log_level=uv_level, log_config=None)
     log.info("listening on http://%s:%d/mcp%s", host, port, " (bearer token required)" if token else "")
     await uvicorn.Server(config).serve()

@@ -128,7 +128,7 @@ def _from_file(path: str, cli: CliSettings, how: str) -> Resolved:
         project=project, workspace=os.path.abspath(workspace), scenario=scenario,
         target=cli.target or data.get("target"), runtime=cli.runtime or data.get("runtime"),
         max_chars=cli.max_chars or data.get("max_chars", DEFAULT_MAX_CHARS),
-        timeout=cli.timeout or data.get("timeout", DEFAULT_TIMEOUT),
+        timeout=cli.timeout if cli.timeout is not None else data.get("timeout", DEFAULT_TIMEOUT),
         source=f"{os.path.basename(project)} from {path} ({how})",
     )
 
@@ -140,7 +140,7 @@ def resolve(cli: CliSettings, roots: list[str], cwd: str) -> Resolved:
         return Resolved(
             project=project, workspace=os.path.abspath(cli.workspace or os.path.dirname(project)),
             scenario=dict(cli.scenario), target=cli.target, runtime=cli.runtime,
-            max_chars=cli.max_chars or DEFAULT_MAX_CHARS, timeout=cli.timeout or DEFAULT_TIMEOUT,
+            max_chars=cli.max_chars or DEFAULT_MAX_CHARS, timeout=cli.timeout if cli.timeout is not None else DEFAULT_TIMEOUT,
             source=f"{os.path.basename(project)} from -P",
         )
     if cli.config:
@@ -161,7 +161,7 @@ def resolve(cli: CliSettings, roots: list[str], cwd: str) -> Resolved:
         return Resolved(
             project=project, workspace=os.path.abspath(cli.workspace or root), scenario=dict(cli.scenario),
             target=cli.target, runtime=cli.runtime, max_chars=cli.max_chars or DEFAULT_MAX_CHARS,
-            timeout=cli.timeout or DEFAULT_TIMEOUT,
+            timeout=cli.timeout if cli.timeout is not None else DEFAULT_TIMEOUT,
             source=(f"{os.path.basename(project)}: the only .gpr in the {where} {root}, no .lal-mcp.toml; "
                     "scenario variables are GPR defaults"),
         )
