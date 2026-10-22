@@ -39,6 +39,57 @@ def test_initialize_and_list_tools_without_libadalang():
         assert desc and desc.count(". ") <= 1, (t.name, desc)
 
 
+def test_tool_call_without_libadalang_is_error_result():
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR], stub="no_lal") as (s, _):
+            r1 = await s.call_tool("find_unit", {"name": "Vehicle"})
+            r2 = await s.call_tool("outline", {"target": "Vehicle"})
+            return r1, r2
+
+    r1, r2 = run(go)
+    for r in (r1, r2):
+        assert r.is_error
+        assert "libadalang import failed" in r.content[0].text
+
+
+def test_native_stdout_writes_during_load_do_not_break_session():
+    """The stub writes to fd 1 / the Win32 stdout handle / print() while 'loading'."""
+
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR], stub="noisy_lal") as (s, _):
+            r = await s.call_tool("find_unit", {"name": "Vehicle"})
+            tools = (await s.list_tools()).tools  # session still alive and in sync
+            return r, tools
+
+    r, tools = run(go)
+    assert r.is_error and "noisy stub" in r.content[0].text
+    assert len(tools) >= 5
+
+
+def test_bad_arguments_are_error_results():
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR], stub="no_lal") as (s, _):
+            return await s.call_tool("goto_definition", {"file": "x.adb", "line": "not a number", "column": 1})
+
+    r = run(go)
+    assert r.is_error
+
+
+@pytest.mark.skipif(not __import__("conftest").have_libadalang(), reason="libadalang not importable")
+def test_real_tool_call_over_stdio():
+    async def go():
+        async with mcp_client(["-P", FIXTURE_GPR, "-XBUILD=release", "--max-chars", "300"]) as (s, _):
+            r1 = await s.call_tool("goto_definition", {"file": "src/main_proc.2.ada", "line": 14, "column": 4})
+            r2 = await s.call_tool("find_references", {"file": "src/vehicle__engine.1.ada", "line": 2,
+                                                        "column": 17, "limit": 100})
+            return r1, r2
+
+    r1, r2 = run(go)
+    assert not r1.is_error
+    assert "procedure Log (Value : Integer);" in r1.content[0].text
+    assert len(r2.content[0].text) <= 300 and "[truncated:" in r2.content[0].text
+
+
 def test_bad_cli_args_exit_nonzero():
     import subprocess
     import sys
