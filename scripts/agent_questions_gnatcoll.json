@@ -1,0 +1,41 @@
+{
+  "_comment": "Questions about gnatcoll-core (GNATCOLL_OS=windows). Expected answers are GNAT's own cross-references from gprbuild -gnatc .ali files. fp_files: an answer location in these files that is not expected (and not allowed) counts as a wrong location.",
+  "questions": [
+    {
+      "id": "callers",
+      "question": "List every call site of the function GNATCOLL.JSON.Create_Object in this repository.",
+      "expected": ["gnatcoll-file_indexes.adb:304", "gnatcoll-file_indexes.adb:305", "gnatcoll-file_indexes.adb:331",
+                   "gnatcoll-json.adb:594", "gnatcoll-json.adb:1501", "gnatcoll-opt_parse.adb:619", "gnatcoll-opt_parse.adb:1607"],
+      "allow": ["gnatcoll-json.ads:363", "gnatcoll-json.ads:364"],
+      "fp_files": ["gnatcoll-file_indexes.adb", "gnatcoll-json.adb", "gnatcoll-opt_parse.adb", "gnatcoll-opt_parse-misc_parsers.adb", "gnatcoll-json.ads"]
+    },
+    {
+      "id": "overload_callers",
+      "question": "GNATCOLL.JSON declares several Set_Field overloads. List every call site, anywhere in the repository, of the Set_Field overload whose Field parameter has type Boolean.",
+      "expected": ["gnatcoll-file_indexes.adb:336", "gnatcoll-opt_parse.adb:626"],
+      "allow": [],
+      "fp_files": ["gnatcoll-file_indexes.adb", "gnatcoll-opt_parse.adb", "gnatcoll-opt_parse-misc_parsers.adb"]
+    },
+    {
+      "id": "overload_at_call_1",
+      "question": "At core/src/gnatcoll-file_indexes.adb line 315 there is a call JSON.Create (Self.Total_Size). Which declaration of Create does it call? Give the declaration's location and its parameter type.",
+      "expected": ["gnatcoll-json.ads:336"],
+      "allow": [],
+      "fp_files": ["gnatcoll-json.ads"]
+    },
+    {
+      "id": "overload_at_call_2",
+      "question": "At core/src/gnatcoll-file_indexes.adb line 401 there is a call JSON.Get (Value, \"hash\"). Which declaration of Get does it call? Give the declaration's location and its full signature.",
+      "expected": ["gnatcoll-json.ads:557"],
+      "allow": [],
+      "fp_files": ["gnatcoll-json.ads"]
+    },
+    {
+      "id": "record_components",
+      "question": "What are the components of the record type GNATCOLL.JSON.Parsing_Error? Give each component's name, type and declaration location.",
+      "expected": ["gnatcoll-json.ads:275", "gnatcoll-json.ads:278"],
+      "allow": ["gnatcoll-json.ads:274"],
+      "fp_files": ["gnatcoll-json.ads"]
+    }
+  ]
+}
