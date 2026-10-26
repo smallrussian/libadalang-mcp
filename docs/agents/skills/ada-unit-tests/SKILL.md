@@ -82,9 +82,27 @@ Bit operations need extra care. State each of these explicitly in the derivation
 
 ## 5. Write the tests
 
-- Use the project's existing test framework and layout. Look for them with
-  `package_files` / `find_unit`, not by guessing names.
-- One test per matrix row, named after the operation, overload and case.
+- **GNATtest harness (GNATdas).** If `test_model` shows a `gnattest test:` line,
+  that's where this subprogram's test goes. For example:
+
+  ```
+  gnattest test: app/obj/gnattest/tests/bit_ops-test_data-tests.adb:36 Test_Set_Bit (generated skeleton, ...)
+  ```
+
+  - Write the test inside that procedure, between `--  end read only` and
+    `--  begin read only`. Replace the default `Assert (... "Test not implemented.")`.
+  - Never edit the `read only` regions or the `--  id:` / marker comments:
+    GNATtest uses them to keep your tests when it regenerates.
+  - For several matrix rows of one subprogram, put several `AUnit.Assertions.Assert`
+    calls in that test, each with a message naming the row. Or use `Test_Data`
+    for shared setup.
+  - If it shows `gnattest test: none generated`, ask the runner workflow (or the
+    user) to run `gnattest` for the unit. Don't hand-write a test that GNATtest
+    would generate.
+- **No harness:** use the project's existing test framework and layout. Look for
+  them with `package_files` / `find_unit`, not by guessing names.
+- One test per matrix row (or one assertion per row in a GNATtest test), named
+  after the operation, overload and case.
 - Doubles: for foreign imports, define the same external symbol in the test
   harness, or link the real library. Choose based on step 2. For dispatching
   calls, use a test-local derived type.

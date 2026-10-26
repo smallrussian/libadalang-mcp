@@ -42,6 +42,8 @@ class Proj:
     linker_options: list[str]
     imports: list[str] = field(default_factory=list)  # project files this one withs
     imported_by: list[str] = field(default_factory=list)
+    object_dir: str | None = None
+    gnattest_harness_dir: str | None = None  # package Gnattest'Harness_Dir, relative to object_dir
 
 
 def _attr(p: dict, name: str):
@@ -124,6 +126,8 @@ class BuildInfo:
                 linker_options=_as_list(_pkg_attr(entry, "Linker", "Linker_Options")),
                 imports=[os.path.normpath(_id_to_file(x)) for x in entry.get("imports", []) or []],
                 imported_by=[os.path.normpath(_id_to_file(x)) for x in entry.get("imported-by", []) or []],
+                object_dir=os.path.normpath(pr["object-directory"]) if pr.get("object-directory") else None,
+                gnattest_harness_dir=(_as_list(_pkg_attr(entry, "Gnattest", "Harness_Dir")) or [None])[0],
             ))
         root_id = data.get("tree", {}).get("root-project", {}).get("id", "")
         root_file = norm(_id_to_file(root_id)) if root_id else norm(self.sess.project_path)
@@ -141,6 +145,14 @@ class BuildInfo:
                 if (key.startswith(dk + os.sep) or os.path.dirname(key) == dk) and len(dk) > best_len:
                     best, best_len = p, len(dk)
         return best
+
+    def gnattest_harness(self) -> str | None:
+        """Where GNATtest puts the root project's harness: <object dir>/<Harness_Dir or gnattest/harness>/test_driver.gpr."""
+        if self.root is None or not self.root.object_dir:
+            return None
+        sub = self.root.gnattest_harness_dir or os.path.join("gnattest", "harness")
+        d = sub if os.path.isabs(sub) else os.path.join(self.root.object_dir, sub)
+        return os.path.normpath(os.path.join(d, "test_driver.gpr"))
 
     def withed_by_root(self, proj: Proj) -> str:
         """'root project', 'direct', 'indirect' or 'no' for the root project's with closure."""

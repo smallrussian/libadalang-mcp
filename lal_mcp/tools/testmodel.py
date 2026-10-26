@@ -14,6 +14,9 @@ The first line is a status for workflow gates: `[status: complete]` or
 
 from __future__ import annotations
 
+import os
+import re
+
 from lal_mcp.session import Session, ToolFailure, last_line
 from lal_mcp.tools.text import one_line
 
@@ -280,6 +283,10 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
         if facts:
             out.append(f"      type {facts}")
 
+    gt = gnattest_test(sess, spec)
+    if gt:
+        out.append(gt)
+
     if body is not None:
         out += _body_analysis(lal, sess, body, spec, gaps)
 
@@ -291,6 +298,44 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
     note = ("expected results: derive from the specification/contract and compute them independently; "
             "this model lists inputs, paths and effects, not oracle values")
     return "\n".join([status] + out + [note]), False
+
+
+def gnattest_test(sess: Session, spec) -> str | None:
+    """The GNATtest-generated test for this subprogram, found by its marker comment
+    `--  <spec file>:<line>:<col>:<Name>`, when a GNATtest harness is loaded."""
+    if not getattr(sess, "harness", None):
+        return None
+    sl = spec.sloc_range.start
+    try:
+        name = spec.p_defining_name.text.split(".")[-1]
+    except Exception:
+        return None
+    marker = f"--  {os.path.basename(spec.unit.filename)}:{sl.line}:{sl.column}:{name}".lower()
+    for path in sess.sources():
+        if not path.lower().endswith("-tests.adb"):
+            continue
+        try:
+            with open(path, encoding="latin-1") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        for i, ln in enumerate(lines):
+            if ln.strip().lower() != marker:
+                continue
+            proc_line, proc = i + 1, "?"
+            for j in range(i, max(-1, i - 6), -1):  # the `procedure Test_X (...) is` just above
+                m = re.match(r"\s*procedure\s+(\w+)", lines[j], re.I)
+                if m:
+                    proc_line, proc = j + 1, m.group(1)
+                    break
+            end = next((k for k in range(i, len(lines)) if re.match(rf"\s*end\s+{re.escape(proc)}\s*;", lines[k], re.I)),
+                       len(lines) - 1)
+            skeleton = any("test not implemented" in lines[k].lower() for k in range(i, end + 1))
+            state = ("generated skeleton, not implemented yet: write the test between the `--  end read only` "
+                     "and `--  begin read only` markers" if skeleton else "implemented")
+            return f"gnattest test: {sess.rel(path)}:{proc_line} {proc} ({state})"
+    return ("gnattest test: none generated for this subprogram in the loaded harness "
+            f"(regenerate with gnattest -P {sess.rel(sess.project_path)}; existing tests are kept)")
 
 
 def _body_analysis(lal, sess: Session, body, spec, gaps: list[str]) -> list[str]:

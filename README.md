@@ -192,6 +192,39 @@ caches. That matters most in HTTP mode, where it runs for days.
   reliable (some network drives), or after changing environment variables a
   project reads.
 
+### GNATtest (GNATdas) test harness
+
+[GNATtest](https://docs.adacore.com/R/docs/gnat-27.0/gnatdas/html/gnatdas_ug/gnattest/gnattest_part.html)
+generates a test skeleton per subprogram and a harness project. Both live in the
+project's object directory, outside its sources:
+
+```bash
+gnattest -P app.gpr bit_ops.ads          # skeletons for one unit (omit the file for all)
+gprbuild -P obj/gnattest/harness/test_driver.gpr
+obj/gnattest/harness/test_runner         # "Test not implemented." until each body is written
+```
+
+The server finds the harness at `<object dir>/gnattest/harness/test_driver.gpr`
+(or `Gnattest'Harness_Dir`) and loads it as the root project. Since it withs
+your project, every answer about your code stays the same, and the generated
+test packages become sources too:
+
+- `test_model` shows a subprogram's generated test, and whether it's still a
+  skeleton, e.g.
+  `gnattest test: app/obj/gnattest/tests/bit_ops-test_data-tests.adb:36 Test_Set_Bit (generated skeleton, ...)`.
+- A harness generated or regenerated while the server runs is picked up before
+  the next call: `[project reloaded: test_driver.gpr created; ...]`.
+- `reload_project` reports the loaded harness and lists its test packages.
+- If the harness doesn't load, for example a stale one, the server uses the
+  project alone and says why.
+- Settings: `tests_project = "..."` in `.lal-mcp.toml` (or `--tests-project`)
+  points at a harness elsewhere. `gnattest = false` (or `--no-gnattest`) turns
+  detection off.
+- Only the default single-driver harness is supported, not `--separate-drivers`.
+
+The harness location comes from `gprinspect`, so detection needs GNAT Pro's
+`bin` on the server's `PATH`.
+
 ## Codex configuration
 
 One global entry for all repositories. The project comes from each repo's

@@ -43,6 +43,10 @@ Use the tools instead of reading whole files:
   automatically: the next answer starts with `[project reloaded: ...]`. If a
   file you just created is still `unresolved`, call `reload_project` once before
   treating it as a blocker.
+- A GNATtest (GNATdas) harness in the object directory is loaded too. Its test
+  packages resolve like any unit, and `test_model` shows each subprogram's
+  generated test. Those test files live under `obj/`, but they're real test
+  sources. Don't treat them as build output.
 
 ### Uncertainty gate: stop, don't guess
 

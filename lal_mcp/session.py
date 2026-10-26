@@ -41,6 +41,8 @@ class Config:
     runtime: str | None = None
     max_chars: int = 8000
     timeout: int = 20
+    tests_project: str | None = None  # explicit GNATtest harness (test_driver.gpr)
+    gnattest: bool = True             # auto-detect the GNATtest harness in the object directory
 
 
 def norm(path: str) -> str:
@@ -86,6 +88,10 @@ class Session:
         self._dir_names: dict[str, frozenset[str]] = {}
         self._last_check = 0.0
         self.reloads = 0
+        # GNATtest: the harness project, when loaded as the root (it withs the project)
+        self.harness: str | None = None
+        self.harness_note: str | None = None  # why it is not loaded, if it isn't
+        self._harness_watch: list[str] = []
 
     # ------------------------------------------------------------------ load
 
@@ -105,13 +111,61 @@ class Session:
             raise
 
     def _load(self) -> None:
-        self.lal, self.prj, self.ctx = self._build()
+        (self.lal, self.prj, self.ctx), self.harness, bi = self._build_view()
+        self._adopt_buildinfo(bi)
         self._snapshot()
-        log.info("project loaded: %d source files", len(self.sources()))
+        log.info("project loaded: %d source files%s", len(self.sources()),
+                 f" (with GNATtest harness {self.harness})" if self.harness else "")
 
-    def _build(self):
-        """Load the GPR project and create a fresh analysis context. Doesn't touch self's state
+    @property
+    def load_root(self) -> str:
+        """The project actually loaded: the GNATtest harness if any, else the configured project."""
+        return self.harness or self.project_path
+
+    def _harness_candidate(self):
+        """(test_driver.gpr path or None, BuildInfo or None). Explicit tests_project wins; otherwise
+        GNATtest's default location in the project's object directory, via gprinspect."""
+        if self.cfg.tests_project:
+            return os.path.abspath(self.cfg.tests_project), None
+        if not self.cfg.gnattest:
+            return None, None
+        try:
+            from lal_mcp.buildinfo import BuildInfo
+
+            bi = BuildInfo(self)
+        except ToolFailure as exc:
+            log.info("GNATtest harness detection off: %s", exc)
+            return None, None
+        return bi.gnattest_harness(), bi
+
+    def _build_view(self):
+        """Build the project view: the GNATtest harness as root when it exists and loads,
+        else the project itself. Returns ((lal, prj, ctx), harness path or None, BuildInfo)."""
+        cand, bi = self._harness_candidate()
+        self._harness_watch = [cand] if cand else []
+        self.harness_note = None
+        if cand and os.path.isfile(cand):
+            errors_before = list(self.project_errors)
+            try:
+                view = self._build(cand)
+                return view, cand, bi
+            except ToolFailure as exc:
+                self.project_errors = errors_before
+                self.harness_note = f"GNATtest harness {self.rel(cand)} not loaded ({exc}); using the project only"
+                log.warning("%s", self.harness_note)
+        elif cand:
+            self.harness_note = f"no GNATtest harness yet (expected at {self.rel(cand)})"
+        return self._build(self.project_path), None, bi
+
+    def _adopt_buildinfo(self, bi) -> None:
+        """Reuse the gprinspect result from harness detection for link_info (same project tree)."""
+        if bi is not None:
+            self._buildinfo = bi
+
+    def _build(self, root: str | None = None):
+        """Load a GPR project and create a fresh analysis context. Doesn't touch self's state
         except project_errors / load_note, so a failed reload leaves the previous view usable."""
+        root = root or self.project_path
         try:
             import libadalang as lal
         except Exception as exc:  # ImportError, OSError from a missing DLL/.so
@@ -119,24 +173,24 @@ class Session:
                 f"libadalang import failed: {last_line(exc)}. "
                 "Check PYTHONPATH and PATH/LD_LIBRARY_PATH for the GNAT Pro libadalang install."
             ) from exc
-        if not os.path.isfile(self.project_path):
-            raise ToolFailure(f"project file not found: {self.project_path}")
+        if not os.path.isfile(root):
+            raise ToolFailure(f"project file not found: {root}")
         if "PATH" not in os.environ:
             # GPR's Ada code reads PATH unconditionally; when it is unset it raises an
             # unhandled CONSTRAINT_ERROR that terminates the whole process.
             os.environ["PATH"] = os.defpath
             log.warning("PATH was unset; using %r. Put the GNAT bin directory on PATH.", os.defpath)
-        log.info("loading project %s", self.project_path)
+        log.info("loading project %s", root)
         try:
             prj = lal.GPRProject(
-                self.project_path,
+                root,
                 scenario_vars=dict(self.cfg.scenario),
                 target=self.cfg.target,
                 runtime=self.cfg.runtime,
                 print_errors=False,
             )
         except Exception as exc:
-            raise ToolFailure(f"cannot load project {self.project_path}: {last_line(exc)}") from exc
+            raise ToolFailure(f"cannot load project {root}: {last_line(exc)}") from exc
         self.project_errors = list(prj.errors)
         for err in self.project_errors:
             log.warning("project: %s", err)
@@ -159,7 +213,7 @@ class Session:
     def project_files(self) -> list[str]:
         """The root .gpr and the project files it withs/extends that can be found (textual scan).
         Installed projects that can't be located are not watched; they rarely change."""
-        search = [os.path.dirname(self.project_path)]
+        search = [os.path.dirname(self.load_root), os.path.dirname(self.project_path)]
         for var in ("GPR_PROJECT_PATH", "ADA_PROJECT_PATH"):
             search += [p for p in os.environ.get(var, "").split(os.pathsep) if p]
         gnat = shutil.which("gnat") or shutil.which("gprbuild")
@@ -167,7 +221,7 @@ class Session:
             prefix = os.path.dirname(os.path.dirname(gnat))
             search += [os.path.join(prefix, "share", "gpr"), os.path.join(prefix, "lib", "gnat")]
         seen: dict[str, str] = {}
-        todo = [self.project_path]
+        todo = [self.load_root, self.project_path]
         while todo:
             f = os.path.abspath(todo.pop())
             key = norm(f)
@@ -212,6 +266,8 @@ class Session:
         self._watch_exts = tuple(sorted(set(ADA_EXTS) | {os.path.splitext(f)[1].lower()
                                                          for f in self.sources() if os.path.splitext(f)[1]}))
         self._gpr_mtimes = {f: self._stat(f) for f in self.project_files()}
+        for h in self._harness_watch:  # a harness generated later triggers a reload
+            self._gpr_mtimes.setdefault(h, self._stat(h))
         self._dir_mtimes, self._dir_names = {}, {}
         for d in self._source_dirs():
             self._dir_mtimes[d] = self._stat(d)
@@ -226,7 +282,8 @@ class Session:
         for f, m in self._gpr_mtimes.items():
             now = self._stat(f)
             if now != m:
-                reasons.append(f"{os.path.basename(f)} {'changed' if now else 'removed'}")
+                what = "created" if m is None else ("removed" if now is None else "changed")
+                reasons.append(f"{os.path.basename(f)} {what}")
         if reasons:
             return reasons
         for d, m in self._dir_mtimes.items():
@@ -249,21 +306,23 @@ class Session:
         """Rebuild the project view and drop every cache derived from it."""
         old = set(self._source_keys) if self._sources is not None else set()
         try:
-            lal, prj, ctx = self._build()
+            (lal, prj, ctx), harness, bi = self._build_view()
         except ToolFailure as exc:
             self._last_check = time.monotonic()
             raise ToolFailure(f"project reload failed ({reason}): {exc}. Still answering from the previous "
                               "project view; fix the project and the next call retries.") from exc
         self.lal, self.prj, self.ctx = lal, prj, ctx
+        self.harness = harness
         self._sources, self._source_keys, self._mtimes = None, set(), {}
         for attr in _DERIVED_CACHES:
             if hasattr(self, attr):
                 setattr(self, attr, None)
+        self._adopt_buildinfo(bi)
         self._load_error = None
         self._snapshot()
         self.reloads += 1
         new = set(self._source_keys)
-        diff = f"{len(self.sources())} sources"
+        diff = f"{len(self.sources())} sources" + (f", GNATtest harness {self.rel(self.harness)}" if self.harness else "")
         if old:
             diff += f" (+{len(new - old)} / -{len(old - new)})"
         log.info("project reloaded: %s; %s", reason, diff)

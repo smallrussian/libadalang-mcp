@@ -32,7 +32,8 @@ from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
 CONFIG_NAMES = (".lal-mcp.toml", "lal-mcp.toml")
-KNOWN_KEYS = {"project", "workspace", "target", "runtime", "max_chars", "timeout", "scenario"}
+KNOWN_KEYS = {"project", "workspace", "target", "runtime", "max_chars", "timeout", "scenario",
+              "tests_project", "gnattest"}
 DEFAULT_MAX_CHARS = 8000
 DEFAULT_TIMEOUT = 20
 
@@ -53,6 +54,8 @@ class CliSettings:
     runtime: str | None = None
     max_chars: int | None = None
     timeout: int | None = None
+    tests_project: str | None = None  # explicit GNATtest harness (test_driver.gpr)
+    gnattest: bool | None = None      # auto-detect the GNATtest harness (default: on)
 
 
 @dataclass
@@ -65,6 +68,8 @@ class Resolved:
     max_chars: int
     timeout: int
     source: str  # how the project was found, shown to the user once
+    tests_project: str | None = None
+    gnattest: bool = True
 
 
 def uri_to_path(uri: str) -> str | None:
@@ -112,6 +117,10 @@ def load_config(path: str) -> dict:
     for key in ("max_chars", "timeout"):
         if key in data and not (isinstance(data[key], int) and data[key] > 0):
             raise ConfigError(f"{path}: {key} must be a positive integer")
+    if "gnattest" in data and not isinstance(data["gnattest"], bool):
+        raise ConfigError(f"{path}: gnattest must be true or false")
+    if "tests_project" in data and not (isinstance(data["tests_project"], str) and data["tests_project"].strip()):
+        raise ConfigError(f'{path}: tests_project must be a path, e.g. "obj/gnattest/harness/test_driver.gpr"')
     return data
 
 
@@ -130,6 +139,10 @@ def _from_file(path: str, cli: CliSettings, how: str) -> Resolved:
         max_chars=cli.max_chars or data.get("max_chars", DEFAULT_MAX_CHARS),
         timeout=cli.timeout if cli.timeout is not None else data.get("timeout", DEFAULT_TIMEOUT),
         source=f"{os.path.basename(project)} from {path} ({how})",
+        tests_project=(os.path.abspath(cli.tests_project) if cli.tests_project else
+                       os.path.normpath(os.path.join(base, data["tests_project"])) if data.get("tests_project")
+                       else None),
+        gnattest=cli.gnattest if cli.gnattest is not None else data.get("gnattest", True),
     )
 
 
@@ -142,6 +155,8 @@ def resolve(cli: CliSettings, roots: list[str], cwd: str) -> Resolved:
             scenario=dict(cli.scenario), target=cli.target, runtime=cli.runtime,
             max_chars=cli.max_chars or DEFAULT_MAX_CHARS, timeout=cli.timeout if cli.timeout is not None else DEFAULT_TIMEOUT,
             source=f"{os.path.basename(project)} from -P",
+            tests_project=os.path.abspath(cli.tests_project) if cli.tests_project else None,
+            gnattest=cli.gnattest if cli.gnattest is not None else True,
         )
     if cli.config:
         if not os.path.isfile(cli.config):
@@ -164,6 +179,8 @@ def resolve(cli: CliSettings, roots: list[str], cwd: str) -> Resolved:
             timeout=cli.timeout if cli.timeout is not None else DEFAULT_TIMEOUT,
             source=(f"{os.path.basename(project)}: the only .gpr in the {where} {root}, no .lal-mcp.toml; "
                     "scenario variables are GPR defaults"),
+            tests_project=os.path.abspath(cli.tests_project) if cli.tests_project else None,
+            gnattest=cli.gnattest if cli.gnattest is not None else True,
         )
     hint = ('Add a .lal-mcp.toml at the repository root, e.g.\n'
             '  project = "path/to/root.gpr"\n  [scenario]\n  BUILD = "debug"\n'

@@ -87,7 +87,8 @@ async def prepare(ctx) -> None:
     roots = [] if CLI.project or CLI.config else await _client_roots(ctx)
     r = discovery.resolve(CLI, roots, os.getcwd())
     sess = Session(Config(project=r.project, workspace=r.workspace, scenario=r.scenario, target=r.target,
-                          runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout))
+                          runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout,
+                          tests_project=r.tests_project, gnattest=r.gnattest))
     if not CLI.project:
         sess.load_note = f"[project: {r.source}]\n"
     log.info("project %s, workspace %s, scenario %s", r.project, r.workspace, r.scenario)
@@ -169,6 +170,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, ar
     p.add_argument("--target", help="GPR target")
     p.add_argument("--RTS", dest="runtime", help="Ada runtime")
     p.add_argument("--max-chars", type=int, help=f"hard cap per response (default {discovery.DEFAULT_MAX_CHARS})")
+    p.add_argument("--tests-project", metavar="TEST_DRIVER_GPR",
+                   help="GNATtest harness project to load instead of the project (default: auto-detected in "
+                        "<object dir>/gnattest/harness/test_driver.gpr)")
+    p.add_argument("--no-gnattest", action="store_true", help="don't auto-detect a GNATtest harness")
     p.add_argument("--timeout", type=int,
                    help=f"run_lal timeout in seconds, 0 = none, e.g. under a debugger (default {discovery.DEFAULT_TIMEOUT})")
     p.add_argument("--log-level", default="INFO", type=str.upper,
@@ -209,7 +214,8 @@ def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, ar
     if level == "DEBUG":
         logging.getLogger("lal_mcp").setLevel(logging.DEBUG)
     cli = discovery.CliSettings(project=a.project, config=a.config, workspace=a.workspace, scenario=scenario,
-                                target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout)
+                                target=a.target, runtime=a.runtime, max_chars=a.max_chars, timeout=a.timeout,
+                                tests_project=a.tests_project, gnattest=False if a.no_gnattest else None)
     return cli, a
 
 
@@ -241,7 +247,8 @@ def main(argv: list[str] | None = None) -> None:
         log.error("not configured: %s", exc)
         sys.exit(2)
     SESSION = Session(Config(project=r.project, workspace=r.workspace, scenario=r.scenario, target=r.target,
-                             runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout))
+                             runtime=r.runtime, max_chars=r.max_chars, timeout=r.timeout,
+                          tests_project=r.tests_project, gnattest=r.gnattest))
     log.info("project: %s", r.source)
     try:
         SESSION.ensure_loaded()  # fail fast and make the first query quick
