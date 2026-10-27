@@ -194,6 +194,10 @@ caches. That matters most in HTTP mode, where it runs for days.
 
 ### GNATtest (GNATdas) test harness
 
+For the full workflow and best practices (layouts, where tests should live,
+writing, building and running tests, troubleshooting), see
+[docs/gnattest.md](docs/gnattest.md).
+
 [GNATtest](https://docs.adacore.com/R/docs/gnat-27.0/gnatdas/html/gnatdas_ug/gnattest/gnattest_part.html)
 generates a test skeleton per subprogram and a harness project. Both live in the
 project's object directory, outside its sources:

@@ -50,6 +50,9 @@ Use the tools instead of reading whole files:
   - Test files may live under `obj/`, but they're real test sources. Don't
     treat them as build output.
   - The harness itself (`obj/gnattest/harness/`) is generated. Don't edit it.
+  - Regenerate only with the repository's documented gnattest command (same
+    mode, same `--tests-root`). The workflow is in the lal-mcp
+    `docs/gnattest.md`.
 
 ### Uncertainty gate: stop, don't guess
 
