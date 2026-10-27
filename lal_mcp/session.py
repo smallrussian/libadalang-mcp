@@ -42,7 +42,7 @@ class Config:
     runtime: str | None = None
     max_chars: int = 8000
     timeout: int = 20
-    tests_project: str | None = None  # explicit GNATtest harness (test_driver.gpr)
+    tests_project: str | None = None  # explicit GNATtest harness: test_driver(s).gpr or its directory
     gnattest: bool = True             # auto-detect the GNATtest harness in the object directory
 
 
@@ -133,8 +133,9 @@ class Session:
         from lal_mcp import harness
 
         if self.cfg.tests_project:
-            path, note = harness.resolve_explicit(self.cfg.tests_project)
-            watch = harness.candidates(path) if os.path.isdir(self.cfg.tests_project) else [path]
+            explicit = os.path.abspath(self.cfg.tests_project)
+            path, note = harness.resolve_explicit(explicit)
+            watch = harness.candidates(explicit) if os.path.isdir(explicit) else [path]
             return path, watch, note, None
         if not self.cfg.gnattest:
             return None, [], None, None

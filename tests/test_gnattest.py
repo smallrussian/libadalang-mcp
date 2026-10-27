@@ -218,3 +218,4 @@ def test_explicit_tests_project_directory(work):
     _gnattest_separate(work)
     s = _session(work, tests_project=str(work.joinpath(*HARNESS)), gnattest=False)
     assert s.harness and s.harness.endswith("test_drivers.gpr")
+    assert sorted(os.path.basename(w) for w in s._harness_watch) == ["test_driver.gpr", "test_drivers.gpr"]

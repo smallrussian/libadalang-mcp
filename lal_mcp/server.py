@@ -170,9 +170,10 @@ def parse_args(argv: list[str] | None = None) -> tuple[discovery.CliSettings, ar
     p.add_argument("--target", help="GPR target")
     p.add_argument("--RTS", dest="runtime", help="Ada runtime")
     p.add_argument("--max-chars", type=int, help=f"hard cap per response (default {discovery.DEFAULT_MAX_CHARS})")
-    p.add_argument("--tests-project", metavar="TEST_DRIVER_GPR",
-                   help="GNATtest harness project to load instead of the project (default: auto-detected in "
-                        "<object dir>/gnattest/harness/test_driver.gpr)")
+    p.add_argument("--tests-project", metavar="HARNESS",
+                   help="GNATtest harness to load instead of the project: test_driver.gpr, test_drivers.gpr "
+                        "(--separate-drivers) or their directory (default: auto-detected in "
+                        "<object dir>/gnattest/harness)")
     p.add_argument("--no-gnattest", action="store_true", help="don't auto-detect a GNATtest harness")
     p.add_argument("--timeout", type=int,
                    help=f"run_lal timeout in seconds, 0 = none, e.g. under a debugger (default {discovery.DEFAULT_TIMEOUT})")
