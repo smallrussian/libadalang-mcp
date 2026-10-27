@@ -89,6 +89,11 @@ Bit operations need extra care. State each of these explicitly in the derivation
   gnattest test: app/obj/gnattest/tests/bit_ops-test_data-tests.adb:36 Test_Set_Bit (generated skeleton, ...)
   ```
 
+  - Use the path `test_model` prints. Tests may live under `obj/gnattest/tests/`
+    or a `--tests-root` directory in the source tree. The layout is the same
+    with or without `--separate-drivers`; only the drivers differ. With separate
+    drivers, `test_model` also prints a `gnattest driver:` line, which is the
+    runner to run for this test.
   - Write the test inside that procedure, between `--  end read only` and
     `--  begin read only`. Replace the default `Assert (... "Test not implemented.")`.
   - Never edit the `read only` regions or the `--  id:` / marker comments:

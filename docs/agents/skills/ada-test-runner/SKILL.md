@@ -23,23 +23,32 @@ changing, report it, and leave it to the `ada-unit-tests` workflow on request.
 
 **GNATtest (GNATdas) harness, preferred when the project uses it.**
 
-- Generate or update it with:
+- Find out which layout the repository uses: `reload_project` reports
+  `GNATtest harness (single driver)` or `(separate drivers)`. Regenerate with the
+  **same switches** that made it, or gnattest starts new skeletons somewhere else.
+  Ask if you can't tell.
+- Generate or update the harness:
 
   ```
-  gnattest -P <project.gpr> [<spec file>...]
+  gnattest -P <project.gpr> [<spec file>...]                 # single driver
+  gnattest -P <project.gpr> --separate-drivers=unit          # one driver per unit (or =test)
   ```
 
-  - Pass the spec files of the units under test to limit it to them.
-  - GNATtest writes the harness to
-    `<object dir>/gnattest/harness/test_driver.gpr` (or the project's
-    `Gnattest'Harness_Dir`).
-  - It writes test packages to `<object dir>/gnattest/tests`.
+  - In single-driver mode, pass the spec files of the units under test to limit
+    it to them. `--separate-drivers` works only **without** spec file arguments
+    (gnattest 26.1 silently falls back to a single driver otherwise).
+  - Add `--tests-root=<dir>` if the repository keeps its tests outside `obj/`.
+    Use the same value as before.
+  - The harness goes in `<object dir>/gnattest/harness/` (or
+    `Gnattest'Harness_Dir`): `test_driver.gpr`, or `test_drivers.gpr` plus one
+    directory per driver.
+  - Test packages go to `<object dir>/gnattest/tests`, or under `--tests-root`.
   - Regenerating keeps existing test bodies and `Test_Data` packages. It only
     adds skeletons for new subprograms.
 - The `ada` MCP server loads the harness automatically. The next answer starts
-  with `[project reloaded: test_driver.gpr created ...]`. Otherwise call
-  `reload_project`; it reports `GNATtest harness: ... loaded` and lists the test
-  packages.
+  with `[project reloaded: test_driver(s).gpr created ...]`. Otherwise call
+  `reload_project`. It reports the harness, lists the test packages, and with
+  separate drivers lists each driver with its units and runner.
 - Generating isn't authoring: running `gnattest` is allowed in runner-only mode.
   Editing test bodies isn't.
 - Before building, run `link_info` on each unit under test. A
@@ -59,9 +68,17 @@ changing, report it, and leave it to the `ada-unit-tests` workflow on request.
 
 ## 3. Run
 
-- **GNATtest:**
+- **GNATtest, single driver:**
   - Build with `gprbuild -P <object dir>/gnattest/harness/test_driver.gpr`.
   - Run `test_runner` from that directory.
+- **GNATtest, separate drivers:**
+  - Build all with `gprbuild -P <object dir>/gnattest/harness/test_drivers.gpr`.
+    If one unit doesn't compile, the whole build stops. Then build only the
+    drivers you need, with their own projects (the `reload_project` driver list,
+    or the `gnattest driver:` line of `test_model`), and report the broken unit.
+  - Run each runner the driver list names. Don't rely on
+    `gnattest test_drivers.list`: with GNAT Pro 26.1 it reported
+    `no test driver in source table` and ran nothing.
   - Each failure is reported against the subprogram, for example:
 
     ```

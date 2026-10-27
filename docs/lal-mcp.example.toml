@@ -17,9 +17,10 @@ project = "mission.gpr"
 # target = "x86_64-linux"
 # runtime = "light"
 
-# GNATtest harness: auto-detected at <object dir>/gnattest/harness/test_driver.gpr and
-# loaded as the root (it withs the project), so generated tests are visible too.
-# tests_project = "obj/gnattest/harness/test_driver.gpr"   # a harness somewhere else
+# GNATtest harness: auto-detected in <object dir>/gnattest/harness: test_driver.gpr, or
+# test_drivers.gpr for --separate-drivers. Loaded as the root (it withs the project),
+# so generated tests are visible too.
+# tests_project = "obj/gnattest/harness"   # a harness somewhere else (file or directory)
 # gnattest = false                                          # turn detection off
 
 # Per-response size cap (characters) and run_lal time limit (seconds).

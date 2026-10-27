@@ -204,23 +204,59 @@ gprbuild -P obj/gnattest/harness/test_driver.gpr
 obj/gnattest/harness/test_runner         # "Test not implemented." until each body is written
 ```
 
-The server finds the harness at `<object dir>/gnattest/harness/test_driver.gpr`
-(or `Gnattest'Harness_Dir`) and loads it as the root project. Since it withs
-your project, every answer about your code stays the same, and the generated
-test packages become sources too:
+With `--separate-drivers`, each unit (`=unit`) or each test (`=test`) gets its
+own driver and runner. gnattest then writes the aggregate project
+`test_drivers.gpr` instead of `test_driver.gpr`. In gnattest 26.1 the switch only
+takes effect **without** source file arguments:
+
+```bash
+gnattest -P app.gpr --separate-drivers=unit
+gprbuild -P obj/gnattest/harness/test_drivers.gpr        # all drivers
+obj/gnattest/harness/Bit_Ops.Test_Data.Tests/bit_ops-test_data-tests-suite-test_runner
+```
+
+The server looks in `<object dir>/gnattest/harness/` (or `Gnattest'Harness_Dir`)
+for `test_drivers.gpr` and `test_driver.gpr`, and loads the one it finds as the
+root project. If both exist, it loads the newer one. Since the harness withs your
+project, every answer about your code stays the same, and the generated test
+packages become sources too:
 
 - `test_model` shows a subprogram's generated test, and whether it's still a
   skeleton, e.g.
   `gnattest test: app/obj/gnattest/tests/bit_ops-test_data-tests.adb:36 Test_Set_Bit (generated skeleton, ...)`.
+- With separate drivers, `test_model` also names the driver and runner that
+  run that test. Each driver registers its tests by spec position
+  (`"bit_ops.ads:14:4:"`), so the match is exact, even for `=test` drivers.
 - A harness generated or regenerated while the server runs is picked up before
-  the next call: `[project reloaded: test_driver.gpr created; ...]`.
-- `reload_project` reports the loaded harness and lists its test packages.
+  the next call: `[project reloaded: test_drivers.gpr created; ..., GNATtest
+  harness ... (separate drivers: 3)]`. Each driver project is watched too.
+- `reload_project` reports the loaded harness and lists its test packages. With
+  separate drivers, it also lists each driver: its units, its runner, and
+  whether the runner is built yet.
 - If the harness doesn't load, for example a stale one, the server uses the
   project alone and says why.
 - Settings: `tests_project = "..."` in `.lal-mcp.toml` (or `--tests-project`)
-  points at a harness elsewhere. `gnattest = false` (or `--no-gnattest`) turns
+  points at a harness file or harness directory elsewhere. Use it when you pass
+  `--harness-dir` to gnattest. `gnattest = false` (or `--no-gnattest`) turns
   detection off.
-- Only the default single-driver harness is supported, not `--separate-drivers`.
+
+Where things go:
+
+- **Test bodies** (`*-test_data-tests.adb`) and **`Test_Data`** packages are
+  your code. gnattest keeps them when it regenerates. By default they go to each
+  project's `obj/gnattest/tests/`, but `obj/` is usually git-ignored and wiped by
+  cleans. Put them in the source tree with `--tests-root=<repo>/test/gnattest`
+  (tests mirror each source directory), and commit them. The server finds them
+  through the harness, wherever they are.
+- **The harness** (everything under `obj/gnattest/harness/`) is regenerated on
+  every run. Leave it in `obj/`, and don't edit or commit it.
+- Pass the same switches (mode, `--tests-root`) on every regeneration.
+  Otherwise gnattest starts a fresh set of skeletons somewhere else.
+- `gprbuild -P test_drivers.gpr` stops at the first unit that doesn't compile.
+  In that case, build one driver's own project.
+- `gnattest test_drivers.list`, which is meant to run every driver, ran nothing
+  in our 26.1 test (`no test driver in source table`). Run the runners
+  directly.
 
 The harness location comes from `gprinspect`, so detection needs GNAT Pro's
 `bin` on the server's `PATH`.
