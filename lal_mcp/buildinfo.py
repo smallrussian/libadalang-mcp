@@ -146,13 +146,20 @@ class BuildInfo:
                     best, best_len = p, len(dk)
         return best
 
-    def gnattest_harness(self) -> str | None:
-        """Where GNATtest puts the root project's harness: <object dir>/<Harness_Dir or gnattest/harness>/test_driver.gpr."""
+    def gnattest_harness_dir(self) -> str | None:
+        """Where GNATtest puts the root project's harness: <object dir>/<Harness_Dir or gnattest/harness>."""
         if self.root is None or not self.root.object_dir:
             return None
         sub = self.root.gnattest_harness_dir or os.path.join("gnattest", "harness")
-        d = sub if os.path.isabs(sub) else os.path.join(self.root.object_dir, sub)
-        return os.path.normpath(os.path.join(d, "test_driver.gpr"))
+        return os.path.normpath(sub if os.path.isabs(sub) else os.path.join(self.root.object_dir, sub))
+
+    def gnattest_harness(self) -> str | None:
+        """The harness project in that directory: test_drivers.gpr (--separate-drivers) or
+        test_driver.gpr (single driver, also the path to expect when there is none yet)."""
+        from lal_mcp import harness
+
+        d = self.gnattest_harness_dir()
+        return harness.pick(d)[0] if d else None
 
     def withed_by_root(self, proj: Proj) -> str:
         """'root project', 'direct', 'indirect' or 'no' for the root project's with closure."""

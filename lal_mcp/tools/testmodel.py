@@ -333,9 +333,26 @@ def gnattest_test(sess: Session, spec) -> str | None:
             skeleton = any("test not implemented" in lines[k].lower() for k in range(i, end + 1))
             state = ("generated skeleton, not implemented yet: write the test between the `--  end read only` "
                      "and `--  begin read only` markers" if skeleton else "implemented")
-            return f"gnattest test: {sess.rel(path)}:{proc_line} {proc} ({state})"
+            out = f"gnattest test: {sess.rel(path)}:{proc_line} {proc} ({state})"
+            if sess.harness_mode == "separate":
+                out += "\n" + _driver_line(sess, spec, sl)
+            return out
     return ("gnattest test: none generated for this subprogram in the loaded harness "
             f"(regenerate with gnattest -P {sess.rel(sess.project_path)}; existing tests are kept)")
+
+
+def _driver_line(sess: Session, spec, sl) -> str:
+    """The --separate-drivers driver that registers this subprogram's test (by its spec position)."""
+    hits = [d for d in sess.harness_drivers() if d.runs(spec.unit.filename, sl.line, sl.column)]
+    if not hits:
+        return ("gnattest driver: none of the harness drivers registers this test "
+                "(regenerate the harness with the same gnattest switches)")
+    parts = []
+    for d in hits[:3]:
+        runner = sess.rel(d.runner) if d.runner else "unknown"
+        built = "" if d.runner and os.path.isfile(d.runner) else " (not built yet)"
+        parts.append(f"gnattest driver: {sess.rel(d.project)}; runner {runner}{built}")
+    return "\n".join(parts)
 
 
 def _body_analysis(lal, sess: Session, body, spec, gaps: list[str]) -> list[str]:

@@ -25,7 +25,8 @@ _GPR_COMMENT = re.compile(r"--[^\n]*")
 # with "a.gpr", "b";  limited with "c.gpr";  project X extends [all] "d.gpr" is
 _GPR_DEPS = re.compile(r'\b(?:limited\s+)?with\s+"[^;]*;|\bextends\s+(?:all\s+)?"[^"]+"', re.I)
 # caches other modules attach to the session; cleared on reload
-_DERIVED_CACHES = ("_unit_index", "_buildinfo")
+_GPR_PROJECT_FILES = re.compile(r"\bfor\s+Project_Files\s+use\s*\([^)]*\)", re.I)
+_DERIVED_CACHES = ("_unit_index", "_buildinfo", "_drivers")
 
 
 class ToolFailure(Exception):
@@ -92,6 +93,8 @@ class Session:
         self.harness: str | None = None
         self.harness_note: str | None = None  # why it is not loaded, if it isn't
         self._harness_watch: list[str] = []
+        self.harness_choice: str | None = None  # which layout was picked when both exist
+        self._drivers = None
 
     # ------------------------------------------------------------------ load
 
@@ -123,26 +126,53 @@ class Session:
         return self.harness or self.project_path
 
     def _harness_candidate(self):
-        """(test_driver.gpr path or None, BuildInfo or None). Explicit tests_project wins; otherwise
-        GNATtest's default location in the project's object directory, via gprinspect."""
+        """(harness project or None, files to watch, note, BuildInfo or None). Explicit tests_project
+        (a harness file or directory) wins; otherwise GNATtest's default location in the project's
+        object directory, via gprinspect. Both layouts are looked for: test_drivers.gpr
+        (--separate-drivers) and test_driver.gpr (single driver)."""
+        from lal_mcp import harness
+
         if self.cfg.tests_project:
-            return os.path.abspath(self.cfg.tests_project), None
+            path, note = harness.resolve_explicit(self.cfg.tests_project)
+            watch = harness.candidates(path) if os.path.isdir(self.cfg.tests_project) else [path]
+            return path, watch, note, None
         if not self.cfg.gnattest:
-            return None, None
+            return None, [], None, None
         try:
             from lal_mcp.buildinfo import BuildInfo
 
             bi = BuildInfo(self)
         except ToolFailure as exc:
             log.info("GNATtest harness detection off: %s", exc)
-            return None, None
-        return bi.gnattest_harness(), bi
+            return None, [], None, None
+        d = bi.gnattest_harness_dir()
+        if not d:
+            return None, [], None, bi
+        path, note = harness.pick(d)
+        return path, harness.candidates(d), note, bi
+
+    @property
+    def harness_mode(self) -> str | None:
+        """'separate' (aggregate of per-unit/per-test drivers), 'single', or None (no harness loaded)."""
+        if not self.harness:
+            return None
+        from lal_mcp import harness
+
+        return "separate" if harness.is_aggregate(self.harness) else "single"
+
+    def harness_drivers(self):
+        """The drivers of a loaded --separate-drivers harness (empty otherwise); cached per view."""
+        if self._drivers is None:
+            from lal_mcp import harness
+
+            self._drivers = harness.drivers(self.harness) if self.harness_mode == "separate" else []
+        return self._drivers
 
     def _build_view(self):
         """Build the project view: the GNATtest harness as root when it exists and loads,
         else the project itself. Returns ((lal, prj, ctx), harness path or None, BuildInfo)."""
-        cand, bi = self._harness_candidate()
-        self._harness_watch = [cand] if cand else []
+        cand, watch, self.harness_choice, bi = self._harness_candidate()
+        self._harness_watch = watch
         self.harness_note = None
         if cand and os.path.isfile(cand):
             errors_before = list(self.project_errors)
@@ -154,7 +184,9 @@ class Session:
                 self.harness_note = f"GNATtest harness {self.rel(cand)} not loaded ({exc}); using the project only"
                 log.warning("%s", self.harness_note)
         elif cand:
-            self.harness_note = f"no GNATtest harness yet (expected at {self.rel(cand)})"
+            d = self.rel(os.path.dirname(cand))
+            self.harness_note = (f"no GNATtest harness yet (expected at {d}/test_driver.gpr, "
+                                 "or test_drivers.gpr for --separate-drivers)")
         return self._build(self.project_path), None, bi
 
     def _adopt_buildinfo(self, bi) -> None:
@@ -233,8 +265,11 @@ class Session:
                     text = _GPR_COMMENT.sub("", fh.read())
             except OSError:
                 continue
-            for clause in _GPR_DEPS.finditer(text):
-                for name in re.findall(r'"([^"]+)"', clause.group(0)):
+            clauses = [c.group(0) for c in _GPR_DEPS.finditer(text)]
+            clauses += [c.group(0) for c in _GPR_PROJECT_FILES.finditer(text)]  # an aggregate's projects
+            for clause in clauses:
+                for name in re.findall(r'"([^"]+)"', clause):
+                    name = name.replace("\\", "/")  # gnattest writes Windows separators
                     if not name.lower().endswith(".gpr"):
                         name += ".gpr"
                     base = [os.path.dirname(f)] + search
@@ -322,7 +357,11 @@ class Session:
         self._snapshot()
         self.reloads += 1
         new = set(self._source_keys)
-        diff = f"{len(self.sources())} sources" + (f", GNATtest harness {self.rel(self.harness)}" if self.harness else "")
+        diff = f"{len(self.sources())} sources"
+        if self.harness:
+            diff += f", GNATtest harness {self.rel(self.harness)}"
+            if self.harness_mode == "separate":
+                diff += f" (separate drivers: {len(self.harness_drivers())})"
         if old:
             diff += f" (+{len(new - old)} / -{len(old - new)})"
         log.info("project reloaded: %s; %s", reason, diff)
