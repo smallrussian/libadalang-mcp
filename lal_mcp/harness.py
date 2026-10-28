@@ -99,19 +99,31 @@ class Driver:
         return any(needle in _read(f).lower() for f in self.files)
 
 
-def drivers(aggregate: str) -> list[Driver]:
-    """The drivers of a separate-drivers harness, with their units and runner executables."""
+def drivers(aggregate: str, _seen: set[str] | None = None) -> list[Driver]:
+    """The drivers of a separate-drivers harness, with their units and runner executables.
+    An aggregate that lists other aggregates (e.g. one test_drivers.gpr per package) is
+    followed down to the driver projects."""
+    seen = _seen if _seen is not None else set()
+    key = os.path.normcase(os.path.abspath(aggregate))
+    if key in seen:
+        return []
+    seen.add(key)
     listed = {}
     for ln in _read(os.path.join(os.path.dirname(aggregate), "test_drivers.list")).splitlines():
         ln = ln.strip()
         if ln:
             stem = os.path.splitext(os.path.basename(ln.replace("\\", "/")))[0].lower()
             listed[stem] = os.path.normpath(ln)
-    projs = project_files(aggregate)
+    out = []
+    projs = []
+    for p in project_files(aggregate):
+        if is_aggregate(p):
+            out += drivers(p, seen)
+        else:
+            projs.append(p)
     per_dir: dict[str, int] = {}
     for p in projs:
         per_dir[os.path.dirname(p)] = per_dir.get(os.path.dirname(p), 0) + 1
-    out = []
     for p in projs:
         d = os.path.dirname(p)
         text = _read(p)

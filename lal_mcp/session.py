@@ -184,6 +184,9 @@ class Session:
                 self.project_errors = errors_before
                 self.harness_note = f"GNATtest harness {self.rel(cand)} not loaded ({exc}); using the project only"
                 log.warning("%s", self.harness_note)
+        elif cand and self.cfg.tests_project and not os.path.isdir(self.cfg.tests_project):
+            # an explicit harness file: name exactly that file, it's what will be watched
+            self.harness_note = f"no GNATtest harness yet ({self.rel(cand)}, set by tests_project, does not exist)"
         elif cand:
             d = self.rel(os.path.dirname(cand))
             self.harness_note = (f"no GNATtest harness yet (expected at {d}/test_driver.gpr, "

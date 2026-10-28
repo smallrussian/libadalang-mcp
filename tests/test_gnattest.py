@@ -219,3 +219,26 @@ def test_explicit_tests_project_directory(work):
     s = _session(work, tests_project=str(work.joinpath(*HARNESS)), gnattest=False)
     assert s.harness and s.harness.endswith("test_drivers.gpr")
     assert sorted(os.path.basename(w) for w in s._harness_watch) == ["test_driver.gpr", "test_drivers.gpr"]
+
+
+def test_missing_explicit_tests_project_note_names_that_file(work):
+    s = _session(work, tests_project=str(work / "custom" / "my_drivers.gpr"))
+    assert s.harness is None
+    assert s.harness_note == ("no GNATtest harness yet (custom/my_drivers.gpr, set by tests_project, "
+                              "does not exist)")
+
+
+def test_nested_aggregate_of_harnesses_is_followed(work):
+    """An aggregate listing test_drivers.gpr aggregates (one per package) still yields the drivers,
+    and test_model still names the driver that runs a test."""
+    from lal_mcp.tools import testmodel
+
+    _gnattest_separate(work)
+    outer = work / "all_tests.gpr"
+    inner = (work.joinpath(*HARNESS, "test_drivers.gpr")).as_posix()
+    outer.write_text(f'aggregate project All_Tests is\n   for Project_Files use ("{inner}");\nend All_Tests;\n')
+    s = _session(work, tests_project=str(outer), gnattest=False)
+    assert s.harness_mode == "separate"
+    assert len(s.harness_drivers()) == 3
+    t, _ = testmodel.test_model(s, "app/src/bit_ops.ads", 14, 0)
+    assert "gnattest driver: app/obj/gnattest/harness/Bit_Ops.Test_Data.Tests/test_driver.gpr" in t
