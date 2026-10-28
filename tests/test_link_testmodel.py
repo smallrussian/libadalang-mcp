@@ -124,3 +124,21 @@ def test_model_needs_a_subprogram_line(s):
 
     with pytest.raises(ToolFailure, match="no subprogram declared at app/src/bit_ops.ads:6"):
         test_model(s, "app/src/bit_ops.ads", 6, 0)
+
+
+def test_link_info_aggregate_root_counts_aggregated_projects(tmp_path):
+    """With an aggregate root (like a Master.gpr), the aggregated projects are part of the build:
+    no "not withed by the root project" gap for them or for what they with."""
+    from lal_mcp.tools.link import link_info
+
+    app = os.path.join(LINK_FIXTURE, "app", "app.gpr").replace("\\", "/")
+    agg = tmp_path / "everything.gpr"
+    agg.write_text(f'aggregate project Everything is\n   for Project_Files use ("{app}");\nend Everything;\n')
+    sess = Session(Config(project=str(agg), workspace=LINK_FIXTURE, gnattest=False))
+    sess.ensure_loaded()
+    text, err = link_info(sess, "Bit_Ops", True)
+    assert not err
+    assert text.splitlines()[0] == '[status: INCOMPLETE: unresolved symbol "hal_missing_symbol"]'
+    assert "not withed by the root project" not in text
+    assert "withed by root: aggregated by the root" in text  # App
+    assert "withed by root: indirect" in text  # Hal, withed by App

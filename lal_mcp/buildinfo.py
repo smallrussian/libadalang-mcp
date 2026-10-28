@@ -42,6 +42,7 @@ class Proj:
     linker_options: list[str]
     imports: list[str] = field(default_factory=list)  # project files this one withs
     imported_by: list[str] = field(default_factory=list)
+    aggregated: list[str] = field(default_factory=list)  # an aggregate project's Project_Files
     object_dir: str | None = None
     gnattest_harness_dir: str | None = None  # package Gnattest'Harness_Dir, relative to object_dir
 
@@ -74,7 +75,8 @@ def _as_list(v) -> list[str]:
 
 
 def _id_to_file(pid: str) -> str:
-    return pid[1:] if pid.startswith("<") else pid
+    """gprinspect project ids: `<file` for imported projects, `$file` for aggregated ones."""
+    return pid[1:] if pid[:1] in ("<", "$") else pid
 
 
 class BuildInfo:
@@ -126,6 +128,7 @@ class BuildInfo:
                 linker_options=_as_list(_pkg_attr(entry, "Linker", "Linker_Options")),
                 imports=[os.path.normpath(_id_to_file(x)) for x in entry.get("imports", []) or []],
                 imported_by=[os.path.normpath(_id_to_file(x)) for x in entry.get("imported-by", []) or []],
+                aggregated=[os.path.normpath(_id_to_file(x)) for x in entry.get("aggregated", []) or []],
                 object_dir=os.path.normpath(pr["object-directory"]) if pr.get("object-directory") else None,
                 gnattest_harness_dir=(_as_list(_pkg_attr(entry, "Gnattest", "Harness_Dir")) or [None])[0],
             ))
@@ -162,14 +165,18 @@ class BuildInfo:
         return harness.pick(d)[0] if d else None
 
     def withed_by_root(self, proj: Proj) -> str:
-        """'root project', 'direct', 'indirect' or 'no' for the root project's with closure."""
+        """'root project', 'direct', 'aggregated', 'indirect' or 'no' for the root project's closure.
+        A project an aggregate root lists in Project_Files (or anything those with) is part of
+        the build, so it is reachable even though nothing withs it."""
         if self.root is None:
             return "unknown"
         if norm(proj.file) == norm(self.root.file):
             return "root project"
         if any(norm(f) == norm(proj.file) for f in self.root.imports):
             return "direct"
-        seen, todo = set(), list(self.root.imports)
+        if any(norm(f) == norm(proj.file) for f in self.root.aggregated):
+            return "aggregated by the root"
+        seen, todo = set(), list(self.root.imports) + list(self.root.aggregated)
         while todo:
             f = norm(todo.pop())
             if f in seen:
@@ -179,7 +186,7 @@ class BuildInfo:
                 return "indirect"
             p = next((q for q in self.projects if norm(q.file) == f), None)
             if p:
-                todo += p.imports
+                todo += p.imports + p.aggregated
         return "no"
 
     # ----------------------------------------------------- symbol ownership
