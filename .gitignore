@@ -63,3 +63,9 @@ AdaCore-*.zip
 reports/
 .venv-ci/
 !.vscode/launch.json
+
+# local workflow material and test sandboxes (not part of lal-mcp)
+agent_debug/
+agent_debug.original/
+agent_debug_sandbox/
+agent_debug_sandbox2/
