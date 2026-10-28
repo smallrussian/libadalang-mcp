@@ -139,7 +139,8 @@ def link_info(sess: Session, name: str, with_deps: bool) -> tuple[str, bool]:
     runtime_units: set[str] = set()
     project_dep_names: list[str] = []
     if with_deps:
-        for dep in deps.closure(sess, [p.path for p in parts]):
+        # from every file of the unit, subunits included: a subunit's `with`s are dependencies too
+        for dep in deps.closure(sess, list(paths.values())):
             fn = dep.unit.filename
             dname = deps.cu_name(dep)
             if fn and os.path.isfile(fn) and sess.in_project(fn):

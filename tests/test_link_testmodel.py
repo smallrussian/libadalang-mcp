@@ -142,3 +142,23 @@ def test_link_info_aggregate_root_counts_aggregated_projects(tmp_path):
     assert "not withed by the root project" not in text
     assert "withed by root: aggregated by the root" in text  # App
     assert "withed by root: indirect" in text  # Hal, withed by App
+
+
+def test_link_info_deps_include_what_subunits_with(tmp_path):
+    """A unit whose only path to a C import is a `separate` body's with clause: link_info
+    with dependencies must still list the import and its owner."""
+    from lal_mcp.tools.link import link_info
+
+    w = tmp_path / "fx"
+    shutil.copytree(LINK_FIXTURE, w, ignore=shutil.ignore_patterns("obj", "lib"))
+    src = w / "app" / "src"
+    (src / "sub_user.ads").write_text("package Sub_User is\n   procedure Run;\nend Sub_User;\n")
+    (src / "sub_user.adb").write_text("package body Sub_User is\n   procedure Run is separate;\nend Sub_User;\n")
+    (src / "sub_user-run.adb").write_text(
+        "with Hal;\nseparate (Sub_User)\nprocedure Run is\nbegin\n   Hal.Hal_Reset;\nend Run;\n")
+    sess = Session(Config(project=str(w / "app" / "app.gpr"), workspace=str(w), gnattest=False))
+    sess.ensure_loaded()
+    text, err = link_info(sess, "Sub_User", True)
+    assert not err
+    assert 'Hal_Reset  import, convention C (pragma), symbol "hal_reset"' in text
+    assert "project Hal (hal/hal.gpr)" in text
