@@ -34,7 +34,8 @@ Primary client: OpenAI Codex CLI. Works with any MCP client (Claude Code etc.).
 | `dump(target, start_line, end_line, max_depth)` | syntax tree (node kinds, fields) of a line range |
 
 The server's `instructions` (sent at `initialize`) carry a short cheat sheet and
-the verify-before-asserting rule.
+the verify-before-asserting rule. Each tool's output, and how to read it:
+[`docs/tools.md`](docs/tools.md).
 
 ## How well it works
 
