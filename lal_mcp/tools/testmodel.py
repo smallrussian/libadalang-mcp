@@ -82,6 +82,194 @@ def _parts(lal, decl):
     return spec, body, parts
 
 
+def _aspect(lal, decl, name: str):
+    """Value of an aspect, attribute definition clause or pragma on `decl`, or None."""
+    try:
+        a = decl.p_get_aspect(name)
+        return a.value if a.exists else None
+    except (lal.PropertyError, Exception):
+        return None
+
+
+def _static_real(lal, expr, depth: int = 0):
+    """Value of a static numeric expression (literals, named numbers, constants, + - * / **,
+    type conversions), as a Python float; None when it is not that simple. Resolves names through
+    package renamings (BDT.X, UBC.PI) by name resolution."""
+    if expr is None or depth > 12:
+        return None
+    try:
+        if expr.is_a(lal.ParenExpr):
+            return _static_real(lal, expr.f_expr, depth + 1)
+        if expr.is_a(lal.IntLiteral, lal.RealLiteral):
+            try:
+                if expr.p_is_static_expr():
+                    return float(expr.p_eval_as_int)
+            except (lal.PropertyError, Exception):
+                pass
+            return float(expr.text.replace("_", ""))
+        if expr.is_a(lal.UnOp):
+            v = _static_real(lal, expr.f_expr, depth + 1)
+            if v is None:
+                return None
+            return -v if expr.f_op.is_a(lal.OpMinus) else v if expr.f_op.is_a(lal.OpPlus) else None
+        if expr.is_a(lal.BinOp):
+            a, b = _static_real(lal, expr.f_left, depth + 1), _static_real(lal, expr.f_right, depth + 1)
+            if a is None or b is None:
+                return None
+            op = expr.f_op
+            if op.is_a(lal.OpPlus):
+                return a + b
+            if op.is_a(lal.OpMinus):
+                return a - b
+            if op.is_a(lal.OpMult):
+                return a * b
+            if op.is_a(lal.OpDiv):
+                return a / b if b else None
+            if op.is_a(lal.OpPow):
+                return a ** b
+            return None
+        if expr.is_a(lal.CallExpr):  # type conversion T (X)
+            tgt = expr.f_name.p_referenced_decl()
+            if tgt is not None and tgt.is_a(lal.BaseTypeDecl) and len(expr.f_suffix) == 1:
+                return _static_real(lal, expr.f_suffix[0].f_r_expr, depth + 1)
+            return None
+        if expr.is_a(lal.BaseId, lal.DottedName):
+            d = expr.p_referenced_decl()
+            if d is not None and d.is_a(lal.NumberDecl):
+                return _static_real(lal, d.f_expr, depth + 1)
+            if d is not None and d.is_a(lal.ObjectDecl) and d.f_has_constant:
+                return _static_real(lal, d.f_default_expr, depth + 1)
+    except (lal.PropertyError, Exception):
+        return None
+    return None
+
+
+def _fmt(v: float) -> str:
+    return f"{v:.15g}"
+
+
+def _bound_names(lal, sess: Session, exprs, owner: str, gaps: list[str]) -> list[str]:
+    """`NAME = FULL.NAME := <declared value> (path:line)` for the constants and named numbers a
+    range bound uses, followed one level into their own definitions (THREE_PI := 3.0 * PI -> PI)."""
+    out, seen = [], set()
+    todo = [(e, 0) for e in exprs if e is not None]
+    while todo:
+        expr, level = todo.pop(0)
+        for n in expr.findall(lambda x: x.is_a(lal.BaseId, lal.DottedName) and not x.is_a(lal.Op)):
+            p = n.parent
+            if p is not None and (p.is_a(lal.DottedName) or (p.is_a(lal.AttributeRef) and p.f_attribute == n)):
+                continue  # part of a longer name, or the attribute designator in X'Last
+            try:
+                d = n.p_referenced_decl()
+            except (lal.PropertyError, Exception):
+                d = None
+            if d is None:
+                gaps.append(f"unresolved: {n.text} in the range of {owner} at {sess.loc(n)}")
+                continue
+            if not d.is_a(lal.NumberDecl, lal.ObjectDecl):
+                continue  # a type or package prefix such as BDT.BAMS'Last
+            key = sess.loc(d)
+            if key in seen:
+                continue
+            seen.add(key)
+            val = d.f_expr if d.is_a(lal.NumberDecl) else d.f_default_expr
+            try:
+                full = d.p_defining_name.p_fully_qualified_name
+            except (lal.PropertyError, Exception):
+                full = d.p_defining_name.text
+            kind = "named number" if d.is_a(lal.NumberDecl) else "constant"
+            num = _static_real(lal, val)
+            shown = f"{n.text} = {full}" if n.text.lower() != full.lower() else full
+            out.append(f"{shown} := {one_line(val.text, 60) if val is not None else '?'}"
+                       + (f" (~ {_fmt(num)})" if num is not None else "") + f" [{kind}, {key}]")
+            if val is not None and level < 1:
+                todo.append((val, level + 1))
+    return out
+
+
+def _real_type(lal, sess: Session, td, gaps: list[str]) -> tuple[list[str], list[str]]:
+    """Facts and boundary values for a floating or fixed point type or subtype: digits/delta,
+    Small and Size, the range (from the nearest subtype constraint or the type definition) with an
+    approximate value when static, and the constants the bounds name, resolved through renamings."""
+    is_float = td.p_is_float_type()
+    name = td.p_defining_name.text
+    rng = None
+    tdef = None
+    cur = td
+    for _ in range(10):  # subtype -> derived type -> base type, nearest range constraint wins
+        if cur is None:
+            break
+        nxt = None
+        if cur.is_a(lal.SubtypeDecl):
+            c = cur.f_subtype.f_constraint
+            if rng is None and c is not None and c.is_a(lal.RangeConstraint):
+                rng = c.f_range.f_range
+            nxt = cur.f_subtype.f_name.p_referenced_decl()
+        else:
+            d = getattr(cur, "f_type_def", None)
+            if d is not None and d.is_a(lal.FloatingPointDef, lal.OrdinaryFixedPointDef, lal.DecimalFixedPointDef):
+                tdef = d
+                if rng is None and d.f_range is not None:
+                    rng = d.f_range.f_range
+                break
+            if d is not None and d.is_a(lal.DerivedTypeDef):
+                si = d.f_subtype_indication
+                c = si.f_constraint
+                if rng is None and c is not None and c.is_a(lal.RangeConstraint):
+                    rng = c.f_range.f_range
+                nxt = si.f_name.p_referenced_decl()
+        if nxt is None or nxt == cur:
+            break
+        cur = nxt
+    facts = []
+    if tdef is not None and tdef.is_a(lal.FloatingPointDef):
+        facts.append(f"floating point, digits {one_line(tdef.f_num_digits.text, 20)}")
+    elif tdef is not None and tdef.is_a(lal.DecimalFixedPointDef):
+        facts.append(f"decimal fixed point, delta {one_line(tdef.f_delta.text, 30)} "
+                     f"digits {one_line(tdef.f_digits.text, 20)}")
+    elif tdef is not None:
+        facts.append(f"fixed point, delta {one_line(tdef.f_delta.text, 30)}")
+    else:
+        facts.append("floating point" if is_float else "fixed point")
+    small = None
+    if not is_float:
+        small_e = _aspect(lal, td, "Small") or (_aspect(lal, cur, "Small") if cur is not None else None)
+        if small_e is not None:
+            small = _static_real(lal, small_e)
+            facts.append(f"Small => {one_line(small_e.text, 30)}" + (f" (= {_fmt(small)})" if small is not None else ""))
+        else:
+            facts.append(f"Small not specified ({name}'Small is the largest power of 2 <= delta)")
+    size = _aspect(lal, td, "Size") or (_aspect(lal, cur, "Size") if cur is not None and cur != td else None)
+    if size is not None:
+        facts.append(f"Size => {one_line(size.text, 20)}")
+    lo_v = hi_v = None
+    if rng is None:
+        facts.append("range: none declared (the base type's full range)")
+    else:
+        if rng.is_a(lal.BinOp) and rng.f_op.is_a(lal.OpDoubleDot):
+            lo_e, hi_e = rng.f_left, rng.f_right
+            lo_v, hi_v = _static_real(lal, lo_e), _static_real(lal, hi_e)
+            txt = f"range {one_line(lo_e.text, 40)} .. {one_line(hi_e.text, 40)}"
+            if lo_v is not None and hi_v is not None:
+                txt += f" (~ {_fmt(lo_v)} .. {_fmt(hi_v)})"
+            facts.append(txt)
+            names = _bound_names(lal, sess, [lo_e, hi_e], name, gaps)
+        else:
+            facts.append(f"range {one_line(rng.text, 60)}")
+            names = _bound_names(lal, sess, [rng], name, gaps)
+        if names:
+            facts.append("where " + "; ".join(names))
+    bounds = [f"{name}'First"]
+    if not is_float:
+        bounds.append(f"{name}'First + {name}'Small")
+    if lo_v is not None and hi_v is not None and lo_v < 0 < hi_v:
+        bounds.append("0.0")
+    if not is_float:
+        bounds.append(f"{name}'Last - {name}'Small")
+    bounds.append(f"{name}'Last")
+    return facts, bounds
+
+
 def describe_type(lal, sess: Session, type_expr, gaps: list[str]) -> tuple[str, list[str]]:
     """(facts, boundary values) for the type of a parameter or result."""
     if type_expr is None:
@@ -172,18 +360,14 @@ def describe_type(lal, sess: Session, type_expr, gaps: list[str]) -> tuple[str, 
             else:
                 facts.append("range not static")
         elif td.p_is_float_type() or td.p_is_fixed_point():
-            facts.append("floating point" if td.p_is_float_type() else "fixed point")
-            try:
-                rng = td.p_discrete_range
-                facts.append(f"range {one_line(rng.low_bound.text, 30)} .. {one_line(rng.high_bound.text, 30)}")
-            except (lal.PropertyError, Exception):
-                pass
+            real_facts, bounds = _real_type(lal, sess, td, gaps)
+            facts += real_facts
         elif td.p_is_array_type():
             facts.append("array: " + one_line(td.text, 100))
         else:
             facts.append(one_line(td.text, 100))
-        size = td.p_get_aspect_spec_expr("Size") if hasattr(td, "p_get_aspect_spec_expr") else None
-        if size is not None:
+        size = _aspect(lal, td, "Size")  # aspect or `for T'Size use` clause
+        if size is not None and not any(f.startswith("Size") for f in facts):
             facts.append(f"Size => {one_line(size.text, 20)}")
     except (lal.PropertyError, Exception) as exc:
         gaps.append(f"type facts for {td.p_defining_name.text}: {last_line(exc)}")
@@ -191,12 +375,45 @@ def describe_type(lal, sess: Session, type_expr, gaps: list[str]) -> tuple[str, 
     return f"{name} ({where}): " + "; ".join(facts), bounds
 
 
+NOTE = ("expected results: derive from the specification/contract and compute them independently; "
+        "this model lists inputs, paths and effects, not oracle values")
+
+
+def _status(gaps: list[str]) -> str:
+    return "[status: complete]" if not gaps else "[status: INCOMPLETE: " + "; ".join(gaps[:8]) + "]"
+
+
 def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, bool]:
+    if line <= 0:
+        return _file_model(sess, file, column)
+    decl = _find_subprogram(sess, file, line, column)
+    out, gaps, _ = _model_lines(sess, decl)
+    return "\n".join([_status(gaps)] + out + [NOTE]), False
+
+
+def _model_lines(sess: Session, decl, types: dict | None = None,
+                 doc_cap: int = 1500) -> tuple[list[str], list[str], set[str]]:
+    """Model lines for one subprogram, its gaps, and the shared type ids it used. With `types`
+    (whole-file mode) each type's facts go into that shared table once and lines refer to its id."""
     import libadalang as lal
 
-    decl = _find_subprogram(sess, file, line, column)
     spec, body, parts = _parts(lal, decl)
     gaps: list[str] = []
+    used: set[str] = set()
+
+    def type_lines(type_expr) -> tuple[str, list[str]]:
+        """(suffix for the parameter line, extra lines)."""
+        facts, bounds = describe_type(lal, sess, type_expr, gaps)
+        if not facts:
+            return "", []
+        if types is not None:
+            tid = types.setdefault(facts, (f"T{len(types) + 1}", bounds))[0]
+            used.add(tid)
+            return f"  [{tid}]", []
+        extra = [f"      type {facts}"]
+        if bounds:
+            extra.append(f"      boundary values: {', '.join(bounds)}")
+        return "", extra
     try:
         fqn = spec.p_defining_name.p_fully_qualified_name
     except Exception:
@@ -218,7 +435,7 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
             doc = ""
         if doc:
             out.append(f"documentation ({sess.loc(p)}), the specification for expected values:")
-            text = doc if len(doc) <= 1500 else doc[:1500] + " ..."
+            text = doc if len(doc) <= doc_cap else doc[:doc_cap] + " ..."
             out += [f"  | {ln}" for ln in text.splitlines()]
             break
     if not doc:
@@ -269,19 +486,15 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
             mode = ps.f_mode.text or "in"
             names = ", ".join(i.text for i in ps.f_ids)
             default = f" := {one_line(ps.f_default_expr.text, 40)}" if ps.f_default_expr else ""
-            facts, bounds = describe_type(lal, sess, ps.f_type_expr, gaps)
-            out.append(f"  {names} : {mode} {one_line(ps.f_type_expr.text, 60)}{default}")
-            if facts:
-                out.append(f"      type {facts}")
-            if bounds:
-                out.append(f"      boundary values: {', '.join(bounds)}")
+            ref, extra = type_lines(ps.f_type_expr)
+            out.append(f"  {names} : {mode} {one_line(ps.f_type_expr.text, 60)}{default}{ref}")
+            out += extra
             if mode in ("out", "in out"):
                 out.append("      written by the subprogram: check its value after the call")
     if sspec is not None and sspec.f_subp_returns is not None:
-        facts, bounds = describe_type(lal, sess, sspec.f_subp_returns, gaps)
-        out.append(f"result: {one_line(sspec.f_subp_returns.text, 60)}")
-        if facts:
-            out.append(f"      type {facts}")
+        ref, extra = type_lines(sspec.f_subp_returns)
+        out.append(f"result: {one_line(sspec.f_subp_returns.text, 60)}{ref}")
+        out += [e for e in extra if not e.lstrip().startswith("boundary values")]
 
     gt = gnattest_test(sess, spec)
     if gt:
@@ -293,11 +506,146 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
     for p in parts:
         if p.unit is not None and sess.has_errors(p.unit):
             gaps.append(f"parse errors in {sess.rel(p.unit.filename)}")
-    gaps = list(dict.fromkeys(gaps))
-    status = "[status: complete]" if not gaps else "[status: INCOMPLETE: " + "; ".join(gaps[:8]) + "]"
-    note = ("expected results: derive from the specification/contract and compute them independently; "
-            "this model lists inputs, paths and effects, not oracle values")
-    return "\n".join([status] + out + [note]), False
+    return out, list(dict.fromkeys(gaps)), used
+
+
+def _file_subprograms(sess: Session, file: str) -> tuple[str, list]:
+    """Library-level subprograms first declared in `file` (no local or generic formal ones)."""
+    import libadalang as lal
+
+    path = sess.resolve_path(file)
+    unit = sess.unit(path)
+    if unit.root is None:
+        raise ToolFailure(f"unresolved: {sess.rel(path)} could not be parsed")
+    found, seen = [], set()
+    for d in unit.root.findall(lal.BasicDecl):
+        try:
+            if d.is_a(lal.EnumLiteralDecl, lal.GenericSubpInternal) or not d.p_is_subprogram:
+                continue
+            if any(p.is_a(lal.GenericFormalPart, lal.BaseSubpBody, lal.TaskBody, lal.ProtectedBody)
+                   for p in d.parents(with_self=False)):
+                continue  # local subprogram or generic formal: tested through its enclosing unit
+            if _parts(lal, d)[0] != d:
+                continue  # the body of a subprogram declared in another file or earlier here
+            sl = d.p_defining_name.sloc_range.start
+        except (lal.PropertyError, Exception):
+            continue
+        if (sl.line, sl.column) not in seen:
+            seen.add((sl.line, sl.column))
+            found.append(d)
+    if not found:
+        raise ToolFailure(f"no subprograms declared in {sess.rel(path)}")
+    return path, found
+
+
+_SHORT_FORMS = (  # (text in a block, short form, legend line)
+    ("documentation: none on the declaration; get the specification from the requirements, "
+     "not from the implementation", "documentation: none",
+     "documentation: none = get the specification from the requirements, not from the implementation"),
+    ("(generated skeleton, not implemented yet: write the test between the `--  end read only` "
+     "and `--  begin read only` markers)", "(skeleton)",
+     "(skeleton) = generated, not implemented yet: write the test between the `--  end read only` "
+     "and `--  begin read only` markers"),
+    ("raises/handlers: none explicit (implicit Constraint_Error from range checks still applies)",
+     "raises/handlers: none explicit",
+     "raises/handlers: none explicit = implicit Constraint_Error from range checks still applies"),
+    ("global state: none (pure with respect to package state)", "global state: none",
+     "global state: none = pure with respect to package state"),
+)
+
+
+def _file_model(sess: Session, file: str, start: int = 1) -> tuple[str, bool]:
+    """Every subprogram of a file, from the `start`-th, in one answer: shared type table and path
+    aliases, then one block per subprogram. Fits the response cap by ending at a whole block and
+    saying where the next page starts, never cutting a block."""
+    import libadalang as lal
+
+    path, decls = _file_subprograms(sess, file)
+    total = len(decls)
+    if start > total:
+        raise ToolFailure(f"{sess.rel(path)} declares {total} subprograms; column={start} is past the last")
+    start = max(1, start)
+    types: dict[str, tuple[str, list[str]]] = {}
+    blocks = []  # (index, name, line, lines, gaps, used type ids)
+    bodies: dict[str, int] = {}
+    for i, d in enumerate(decls[start - 1:], start):
+        name = d.p_defining_name.text
+        dline = d.p_defining_name.sloc_range.start.line
+        try:
+            lines, gaps, used = _model_lines(sess, d, types, doc_cap=600)
+            for p in _parts(lal, d)[2]:
+                if p.unit is not None and p.unit.filename != path:
+                    bodies[p.unit.filename] = bodies.get(p.unit.filename, 0) + 1
+        except (lal.PropertyError, Exception) as exc:
+            lines, gaps, used = [f"test model: {name}  ({sess.rel(path)}:{dline})"], \
+                [f"model failed: {last_line(exc)}"], set()
+        blocks.append((i, name, dline, lines, gaps, used))
+
+    # one driver for the whole file (--separate-drivers=unit): say it once, not per subprogram
+    drv = {ln for b in blocks for ln in b[3] if ln.startswith("gnattest driver:")}
+    shared_driver = len(drv) == 1 and all(any(ln in drv for ln in b[3]) for b in blocks)
+    if shared_driver:
+        for b in blocks:
+            b[3][:] = [ln for ln in b[3] if ln not in drv]
+
+    # spec and body paths repeat on every location: short aliases, defined once
+    spec_rel = sess.rel(path)
+    aliases = [("S", spec_rel)]
+    if bodies:
+        aliases.append(("B", sess.rel(max(bodies, key=bodies.get))))
+    # boilerplate that would repeat in every block: short form per block, meaning once in a legend
+    legend = ["paths: " + ", ".join(f"{a} = {p}" for a, p in aliases)
+              + f" ({aliases[-1][0]}:12 means {aliases[-1][1]}:12)"]
+    for b in blocks:
+        for k, ln in enumerate(b[3]):
+            for a, p in aliases:
+                ln = ln.replace(p + ":", a + ":")
+            b[3][k] = ln
+    for long, short, meaning in _SHORT_FORMS:
+        hit = False
+        for b in blocks:
+            for k, ln in enumerate(b[3]):
+                if long in ln:
+                    b[3][k] = ln.replace(long, short)
+                    hit = True
+        if hit:
+            legend.append(meaning)
+
+    by_id = {tid: (facts, bounds) for facts, (tid, bounds) in types.items()}
+
+    def render(shown: list) -> str:
+        gaps = [f"{b[1]}: {'; '.join(b[4][:2])}" for b in shown if b[4]]
+        last = shown[-1][0]
+        status = _status(gaps)
+        if last < total:
+            status += (f" subprograms {start}-{last} of {total}; the rest: test_model with this file, "
+                       f"line=0, column={last + 1}")
+        out = [status, f"test models: {total} subprograms in {spec_rel}"
+               + (f" (showing {start}-{last})" if (start, last) != (1, total) else "")]
+        if shared_driver:
+            out.append(next(iter(drv)) + " (all subprograms)")
+        out += [f"legend: {m}" for m in legend]
+        ids = sorted({t for b in shown for t in b[5]}, key=lambda t: int(t[1:]))
+        if ids:
+            out.append("types (parameters and results refer to these ids):")
+            for tid in ids:
+                facts, bounds = by_id[tid]
+                for a, p in aliases:
+                    facts = facts.replace(p + ":", a + ":")
+                out.append(f"  {tid} {facts}" + (f"; boundary values: {', '.join(bounds)}" if bounds else ""))
+        for b in shown:
+            out.append(f"--- {b[0]}/{total} {b[1]} S:{b[2]} " + ("[complete]" if not b[4] else "[INCOMPLETE]"))
+            out += b[3]
+        out.append(NOTE)
+        return "\n".join(out)
+
+    budget = max(1000, sess.cfg.max_chars - 100)
+    shown = list(blocks)
+    text = render(shown)
+    while len(text) > budget and len(shown) > 1:
+        shown.pop()
+        text = render(shown)
+    return text, False
 
 
 def gnattest_test(sess: Session, spec) -> str | None:
@@ -314,31 +662,56 @@ def gnattest_test(sess: Session, spec) -> str | None:
     for path in sess.sources():
         if not path.lower().endswith("-tests.adb"):
             continue
-        try:
-            with open(path, encoding="latin-1") as f:
-                lines = f.read().splitlines()
-        except OSError:
+        hit = _test_index(path).get(marker)
+        if hit is None:
             continue
-        for i, ln in enumerate(lines):
-            if ln.strip().lower() != marker:
-                continue
-            proc_line, proc = i + 1, "?"
-            for j in range(i, max(-1, i - 6), -1):  # the `procedure Test_X (...) is` just above
-                m = re.match(r"\s*procedure\s+(\w+)", lines[j], re.I)
-                if m:
-                    proc_line, proc = j + 1, m.group(1)
-                    break
-            end = next((k for k in range(i, len(lines)) if re.match(rf"\s*end\s+{re.escape(proc)}\s*;", lines[k], re.I)),
-                       len(lines) - 1)
-            skeleton = any("test not implemented" in lines[k].lower() for k in range(i, end + 1))
-            state = ("generated skeleton, not implemented yet: write the test between the `--  end read only` "
-                     "and `--  begin read only` markers" if skeleton else "implemented")
-            out = f"gnattest test: {sess.rel(path)}:{proc_line} {proc} ({state})"
-            if sess.harness_mode == "separate":
-                out += "\n" + _driver_line(sess, spec, sl)
-            return out
+        proc_line, proc, skeleton = hit
+        state = ("generated skeleton, not implemented yet: write the test between the `--  end read only` "
+                 "and `--  begin read only` markers" if skeleton else "implemented")
+        out = f"gnattest test: {sess.rel(path)}:{proc_line} {proc} ({state})"
+        if sess.harness_mode == "separate":
+            out += "\n" + _driver_line(sess, spec, sl)
+        return out
     return ("gnattest test: none generated for this subprogram in the loaded harness "
             f"(regenerate with gnattest -P {sess.rel(sess.project_path)}; existing tests are kept)")
+
+
+_MARKER = re.compile(r"--  \S+:\d+:\d+:\S+$")
+_TEST_INDEX: dict[str, tuple[float, dict[str, tuple[int, str, bool]]]] = {}
+
+
+def _test_index(path: str) -> dict[str, tuple[int, str, bool]]:
+    """{lowercased marker: (procedure line, procedure name, still a skeleton)} for one GNATtest
+    test file, re-read only when its mtime changes (tests are edited between calls)."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return {}
+    cached = _TEST_INDEX.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        with open(path, encoding="latin-1") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return {}
+    index: dict[str, tuple[int, str, bool]] = {}
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if not _MARKER.match(s):
+            continue
+        proc_line, proc = i + 1, "?"
+        for j in range(i, max(-1, i - 6), -1):  # the `procedure Test_X (...) is` just above
+            m = re.match(r"\s*procedure\s+(\w+)", lines[j], re.I)
+            if m:
+                proc_line, proc = j + 1, m.group(1)
+                break
+        end = next((k for k in range(i, len(lines)) if re.match(rf"\s*end\s+{re.escape(proc)}\s*;", lines[k], re.I)),
+                   len(lines) - 1)
+        skeleton = any("test not implemented" in lines[k].lower() for k in range(i, end + 1))
+        index.setdefault(s.lower(), (proc_line, proc, skeleton))
+    _TEST_INDEX[path] = (mtime, index)
+    return index
 
 
 def _driver_line(sess: Session, spec, sl) -> str:

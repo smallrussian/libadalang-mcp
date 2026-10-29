@@ -82,11 +82,11 @@ def register(app: MCPServer, run: Callable[..., Awaitable[CallToolResult]]) -> N
     @app.tool(annotations=READ_ONLY)
     async def test_model(
         file: FilePath,
-        line: Line,
-        column: Annotated[int, Field(description="Column of the subprogram name; 0 = the subprogram declared on that line")] = 0,
+        line: Annotated[int, Field(description="1-based line of a subprogram declaration; 0 = every subprogram in the file")],
+        column: Annotated[int, Field(description="Column of the subprogram name; 0 = the subprogram declared on that line. With line=0: the subprogram number to start from")] = 0,
         ctx: Context | None = None,
     ) -> CallToolResult:
-        """Facts for testing one subprogram: parameter types with ranges and boundary values, contracts, branches, raises, returns, global state, callees to double, bit operations. First line is [status: complete] or [status: INCOMPLETE: ...]."""
+        """Facts for testing a subprogram (line=0: every subprogram in the file): parameter types with ranges and boundary values, contracts, branches, raises, returns, global state, callees to double, bit operations. First line is [status: complete] or [status: INCOMPLETE: ...]."""
         return await run(ctx, testmodel.test_model, file, line, column)
 
     @app.tool(annotations=READ_ONLY)

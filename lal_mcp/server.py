@@ -45,6 +45,9 @@ file:line:col is -> goto_definition; who uses it -> find_references; what a unit
 link (Import'ed C symbols, owning GPR projects, linker options, missing bodies) -> link_info;
 facts for testing a subprogram (ranges, boundaries, branches, raises, state, doubles) ->
 test_model; anything else -> run_lal (check names with api_help, node shapes with dump).
+test_model with line=0 models every subprogram in a file at once (types listed once): use it
+for a whole package instead of one call per subprogram; if its status line names a next
+column, call again with line=0 and that column for the rest.
 run_lal: Python with lal, ctx, prj, unit(name_or_path), units(), rel(node) -> "path:line";
 the value of a final expression is printed. f_xxx = syntax child, p_xxx = semantic property
 (may raise lal.PropertyError; some take arguments, e.g. p_referenced_decl()).

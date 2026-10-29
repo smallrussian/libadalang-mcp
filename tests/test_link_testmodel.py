@@ -119,6 +119,43 @@ def test_model_imported_and_missing_bodies(s):
     assert t.startswith("[status: INCOMPLETE: missing body]")
 
 
+def test_model_whole_file_shares_types_and_aliases_paths(s):
+    t = _model(s, 0)
+    assert t.startswith("[status: complete]\ntest models: 5 subprograms in app/src/bit_ops.ads")
+    assert "legend: paths: S = app/src/bit_ops.ads, B = app/src/bit_ops.adb" in t
+    # each type once, referred to by id from every parameter and result
+    assert t.count("modular: mod 65536") == 1 and "  W : in Word  [T1]" in t and "result: Word  [T1]" in t
+    assert "boundary values: 0, 1, 32768, 65534, 65535" in t
+    for n, name in enumerate(["Set_Bit S:14", "Shift S:17", "Rotate S:20", "Read S:23", "Checked_Read S:25"], 1):
+        assert f"--- {n}/5 {name} " in t
+    assert "B:8  if Bit > 15" in t and "Pre => Bit <= 15  (S:15)" in t
+    assert "Hal.Bit_Shift_Left  [foreign import" in t  # same facts as the per-subprogram model
+    assert "derive from the specification/contract" in t
+
+
+def test_model_whole_file_pages_at_whole_blocks(s):
+    from lal_mcp.tools.testmodel import test_model
+
+    old = s.cfg.max_chars
+    s.cfg.max_chars = 2500
+    try:
+        seen, col = [], 1
+        while True:
+            t, _ = test_model(s, "app/src/bit_ops.ads", 0, col)
+            assert len(t) <= 2500
+            seen += [ln.split()[2] for ln in t.splitlines() if ln.startswith("--- ")]
+            first = t.splitlines()[0]
+            if "column=" not in first:
+                break
+            assert first.startswith("[status: complete] subprograms ")
+            col = int(first.rsplit("column=", 1)[1])
+        assert seen == ["Set_Bit", "Shift", "Rotate", "Read", "Checked_Read"]
+    finally:
+        s.cfg.max_chars = old
+    with pytest.raises(ToolFailure, match="declares 5 subprograms"):
+        test_model(s, "app/src/bit_ops.ads", 0, 9)
+
+
 def test_model_needs_a_subprogram_line(s):
     from lal_mcp.tools.testmodel import test_model
 
@@ -162,3 +199,59 @@ def test_link_info_deps_include_what_subunits_with(tmp_path):
     assert not err
     assert 'Hal_Reset  import, convention C (pragma), symbol "hal_reset"' in text
     assert "project Hal (hal/hal.gpr)" in text
+
+
+REAL_TYPES = {
+    "real.gpr": 'project Real is\n   for Source_Dirs use ("src");\n   for Object_Dir use "obj";\nend Real;\n',
+    "src/consts.ads": "package Consts is\n"
+                      "   PI       : constant := 3.14159_26535_89793;\n"
+                      "   THREE_PI : constant := 3.0 * PI;\n"
+                      "end Consts;\n",
+    "src/types.ads": "with Consts;\n"
+                     "package Types is\n"
+                     "   package UC renames Consts;\n"
+                     "   type Radians is digits 6 range -UC.THREE_PI .. UC.THREE_PI;\n"
+                     "   subtype Half is Radians range -UC.PI .. UC.PI;\n"
+                     "   type Bams is delta 2.0**(-15) range -1.0 .. 1.0 - 2.0**(-15);\n"
+                     "   for Bams'Small use 2.0**(-15);\n"
+                     "   for Bams'Size use 16;\n"
+                     "end Types;\n",
+    "src/conv.ads": "with Types;\n"
+                    "package Conv is\n"
+                    "   package T renames Types;\n"
+                    "   function To_Bams (X : T.Radians) return T.Bams;\n"
+                    "   function Halve (X : T.Half) return T.Half;\n"
+                    "end Conv;\n",
+    "src/conv.adb": "package body Conv is\n"
+                    "   function To_Bams (X : T.Radians) return T.Bams is\n"
+                    "   begin\n      return T.Bams (X / T.Radians (T.UC.THREE_PI));\n   end To_Bams;\n"
+                    "   function Halve (X : T.Half) return T.Half is\n"
+                    "   begin\n      return X / 2.0;\n   end Halve;\n"
+                    "end Conv;\n",
+}
+
+
+def test_model_real_types_resolve_ranges_through_renamings(tmp_path):
+    """Floating and fixed point ranges (none were shown before), with the constants the bounds name
+    resolved through package renamings (T.Radians -> Types, UC.THREE_PI -> Consts)."""
+    from lal_mcp.tools.testmodel import test_model
+
+    for rel_path, text in REAL_TYPES.items():
+        p = tmp_path / rel_path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="latin-1")
+    sess = Session(Config(project=str(tmp_path / "real.gpr"), workspace=str(tmp_path), gnattest=False))
+    sess.ensure_loaded()
+    t, _ = test_model(sess, "src/conv.ads", 4, 0)
+    assert t.startswith("[status: complete]"), t
+    assert "type Radians (src/types.ads:4): floating point, digits 6; " \
+           "range -UC.THREE_PI .. UC.THREE_PI (~ -9.42477796076938 .. 9.42477796076938)" in t
+    assert "UC.THREE_PI = Consts.THREE_PI := 3.0 * PI (~ 9.42477796076938) [named number, src/consts.ads:3]" in t
+    assert "PI = Consts.PI := 3.14159_26535_89793" in t  # followed into THREE_PI's definition
+    assert "boundary values: Radians'First, 0.0, Radians'Last" in t
+    assert "fixed point, delta 2.0**(-15); Small => 2.0**(-15) (= 3.0517578125e-05); Size => 16; " \
+           "range -1.0 .. 1.0 - 2.0**(-15) (~ -1 .. 0.999969482421875)" in t
+    t, _ = test_model(sess, "src/conv.ads", 0, 0)
+    assert t.startswith("[status: complete]"), t
+    # a subtype's own range constraint wins over its type's range
+    assert "Half (src/types.ads:5): floating point, digits 6; range -UC.PI .. UC.PI (~ -3.14159265358979" in t
