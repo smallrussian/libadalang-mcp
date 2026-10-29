@@ -388,7 +388,131 @@ def test_model(sess: Session, file: str, line: int, column: int) -> tuple[str, b
         return _file_model(sess, file, column)
     decl = _find_subprogram(sess, file, line, column)
     out, gaps, _ = _model_lines(sess, decl)
-    return "\n".join([_status(gaps)] + out + [NOTE]), False
+    vis = _visibility_lines(sess, [decl])
+    return "\n".join([_status(gaps)] + out + vis + [NOTE]), False
+
+
+def _cu_name(node) -> str:
+    """Dotted name of the library unit that contains `node`, lowercased ("" if unknown)."""
+    try:
+        cu = node.p_enclosing_compilation_unit
+        return ".".join(cu.p_syntactic_fully_qualified_name).lower()
+    except Exception:
+        return ""
+
+
+def _fqn(decl) -> str:
+    try:
+        return decl.p_defining_name.p_fully_qualified_name
+    except Exception:
+        return decl.p_defining_name.text
+
+
+def _visibility_lines(sess: Session, decls, aliases=()) -> list[str]:
+    """What a GNATtest test (a child of the spec's package) can see: the package abbreviations of
+    the spec and body, and the exact `with` / `use type` lines its parameter and result types need,
+    written with full unit names (no abbreviation is visible in a context clause)."""
+    import libadalang as lal
+
+    if not decls:
+        return []
+    spec_unit = _parts(lal, decls[0])[0].unit
+    spec_name = _cu_name(spec_unit.root) if spec_unit is not None and spec_unit.root is not None else ""
+    pieces = spec_name.split(".") if spec_name else []
+    # the spec's package and its ancestors: their declarations are visible in the child test package
+    visible_pkgs = {".".join(pieces[:k]) for k in range(1, len(pieces) + 1)}
+    out: list[str] = []
+
+    def short(loc: str) -> str:
+        for a, p in aliases:
+            loc = loc.replace(p + ":", a + ":")
+        return loc
+
+    # package abbreviations in the spec (visible to tests) and the body (not visible)
+    units = [(spec_unit, True)]
+    bodies = []
+    for d in decls:
+        for p in _parts(lal, d)[2]:
+            if p.unit is not None and p.unit != spec_unit and p.unit not in bodies:
+                bodies.append(p.unit)
+    units += [(u, False) for u in bodies]
+    abbrevs = []
+    for u, in_spec in units:
+        if u is None or u.root is None:
+            continue
+        for r in u.root.findall(lal.PackageRenamingDecl):
+            if any(a.is_a(lal.BaseSubpBody, lal.TaskBody, lal.ProtectedBody) for a in r.parents(with_self=False)):
+                continue  # local to a subprogram: never visible to tests
+            try:
+                tgt = r.f_renames.f_renamed_object.p_referenced_decl()
+                full = _fqn(tgt) if tgt is not None else None
+            except (lal.PropertyError, Exception):
+                full = None
+            name = r.p_defining_name.text
+            target = full or f"{r.f_renames.f_renamed_object.text} (unresolved)"
+            if in_spec:
+                abbrevs.append(f"{name} = {target} [{short(sess.loc(r))}, spec: usable in test bodies as {name}.X; "
+                               f"in @context write {target}]")
+            else:
+                abbrevs.append(f"{name} = {target} [{short(sess.loc(r))}, body only: NOT visible in tests; "
+                               f"write {target}.X and `with {_cu_display(tgt) if full else target};`]")
+    if abbrevs:
+        out.append("abbreviations (package renamings):")
+        out += [f"  {a}" for a in abbrevs]
+
+    # with / use type for the parameter and result types
+    withs: list[str] = []
+    uses: list[str] = []
+    for d in decls:
+        sspec = _parts(lal, d)[0].p_subp_spec_or_null()
+        if sspec is None:
+            continue
+        exprs = [ps.f_type_expr for ps in (sspec.f_subp_params.f_params if sspec.f_subp_params else [])]
+        if sspec.f_subp_returns is not None:
+            exprs.append(sspec.f_subp_returns)
+        for e in exprs:
+            try:
+                td = e.p_designated_type_decl
+            except (lal.PropertyError, Exception):
+                td = None
+            if td is None:
+                continue
+            if td.is_a(lal.ClasswideTypeDecl) and td.parent is not None and td.parent.is_a(lal.BaseTypeDecl):
+                td = td.parent
+            if td.unit is None or not td.unit.filename or td.unit.filename.endswith("__standard"):
+                continue  # Standard: always visible
+            try:
+                owner = td.p_parent_basic_decl
+                owner_name = _fqn(owner).lower() if owner is not None else ""
+            except (lal.PropertyError, Exception):
+                owner_name = ""
+            if owner_name in visible_pkgs:
+                continue  # declared directly in the package under test or an ancestor
+            cu = _cu_name(td)
+            if cu and cu not in visible_pkgs:
+                w = f"with {_cu_display(td)};"
+                if w not in withs:
+                    withs.append(w)
+            u = f"use type {_fqn(td)};"
+            if u not in uses:
+                uses.append(u)
+    if withs or uses:
+        out.append("test context (put these lines in @context as they are: full names, no abbreviations; "
+                   "needed for operators such as = < - abs on these types):")
+        out += [f"  {ln}" for ln in withs + uses]
+    else:
+        out.append("test context: none needed (parameter and result types are visible in the test package)")
+    return out
+
+
+def _cu_display(decl) -> str:
+    """The library unit of `decl`, spelled as declared (the syntactic name comes back lowercased)."""
+    cu = _cu_name(decl)
+    if not cu:
+        return "?"
+    parts = _fqn(decl).split(".")
+    n = len(cu.split("."))
+    return ".".join(parts[:n]) if len(parts) >= n and ".".join(parts[:n]).lower() == cu else cu
 
 
 def _model_lines(sess: Session, decl, types: dict | None = None,
@@ -612,6 +736,10 @@ def _file_model(sess: Session, file: str, start: int = 1) -> tuple[str, bool]:
             legend.append(meaning)
 
     by_id = {tid: (facts, bounds) for facts, (tid, bounds) in types.items()}
+    try:  # for the whole file, so every page carries the same context lines
+        vis = _visibility_lines(sess, decls, aliases)
+    except (lal.PropertyError, Exception) as exc:
+        vis = [f"test context: unknown ({last_line(exc)}); check each type's unit with goto_definition"]
 
     def render(shown: list) -> str:
         gaps = [f"{b[1]}: {'; '.join(b[4][:2])}" for b in shown if b[4]]
@@ -625,6 +753,7 @@ def _file_model(sess: Session, file: str, start: int = 1) -> tuple[str, bool]:
         if shared_driver:
             out.append(next(iter(drv)) + " (all subprograms)")
         out += [f"legend: {m}" for m in legend]
+        out += vis
         ids = sorted({t for b in shown for t in b[5]}, key=lambda t: int(t[1:]))
         if ids:
             out.append("types (parameters and results refer to these ids):")

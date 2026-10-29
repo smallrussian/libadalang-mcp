@@ -222,9 +222,11 @@ REAL_TYPES = {
                     "   function To_Bams (X : T.Radians) return T.Bams;\n"
                     "   function Halve (X : T.Half) return T.Half;\n"
                     "end Conv;\n",
-    "src/conv.adb": "package body Conv is\n"
+    "src/conv.adb": "with Consts;\n"
+                    "package body Conv is\n"
+                    "   package C renames Consts;\n"
                     "   function To_Bams (X : T.Radians) return T.Bams is\n"
-                    "   begin\n      return T.Bams (X / T.Radians (T.UC.THREE_PI));\n   end To_Bams;\n"
+                    "   begin\n      return T.Bams (X / T.Radians (C.THREE_PI));\n   end To_Bams;\n"
                     "   function Halve (X : T.Half) return T.Half is\n"
                     "   begin\n      return X / 2.0;\n   end Halve;\n"
                     "end Conv;\n",
@@ -255,3 +257,32 @@ def test_model_real_types_resolve_ranges_through_renamings(tmp_path):
     assert t.startswith("[status: complete]"), t
     # a subtype's own range constraint wins over its type's range
     assert "Half (src/types.ads:5): floating point, digits 6; range -UC.PI .. UC.PI (~ -3.14159265358979" in t
+
+
+def test_model_visibility_abbreviations_and_context(tmp_path):
+    """Which package abbreviations a GNATtest test (a child of the spec) can use, and the exact
+    with / use type lines for the parameter and result types, in full names."""
+    from lal_mcp.tools.testmodel import test_model
+
+    for rel_path, text in REAL_TYPES.items():
+        p = tmp_path / rel_path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="latin-1")
+    sess = Session(Config(project=str(tmp_path / "real.gpr"), workspace=str(tmp_path), gnattest=False))
+    sess.ensure_loaded()
+    t, _ = test_model(sess, "src/conv.ads", 0, 0)
+    assert "  T = Types [S:3, spec: usable in test bodies as T.X; in @context write Types]" in t, t
+    assert "  C = Consts [B:3, body only: NOT visible in tests; write Consts.X and `with Consts;`]" in t
+    ctx = t.split("test context (", 1)[1].splitlines()
+    assert ctx[1:4] == ["  with Types;", "  use type Types.Radians;", "  use type Types.Bams;"], ctx[:6]
+    assert "  use type Types.Half;" in ctx  # a subtype: its operators are the type's
+    assert "use type T." not in t  # never the abbreviation in a context clause
+    t, _ = test_model(sess, "src/conv.ads", 4, 0)  # the single-subprogram model carries it too
+    assert "  with Types;" in t and "  use type Types.Radians;" in t and "Types.Half" not in t
+
+
+def test_model_context_skips_types_of_the_package_itself(s):
+    t = _model(s, 17)  # Shift: Interfaces.Unsigned_32 from the runtime, Natural from Standard
+    assert "  with Interfaces;\n  use type Interfaces.Unsigned_32;" in t
+    t = _model(s, 14)  # Set_Bit: Word and Bit_Index are declared in Bit_Ops itself
+    assert "test context: none needed" in t
