@@ -1,0 +1,44 @@
+# lal-mcp as a systemd service, one instance per repository.
+#   /etc/lal-mcp/<name>.env   settings for instance <name> (see lal-mcp.env.example)
+#   systemctl enable --now lal-mcp@<name>
+# See docs/linux-service.md.
+
+[Unit]
+Description=Libadalang MCP server (%i)
+Documentation=file:///opt/lal-mcp/app/docs/linux-service.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lal-mcp
+Group=lal-mcp
+EnvironmentFile=/etc/lal-mcp/%i.env
+ExecStart=/opt/lal-mcp/lal-mcp-serve
+# The server loads the whole project before it opens the port; large projects take a while.
+TimeoutStartSec=infinity
+Restart=on-failure
+RestartSec=5
+# Exit 2 = configuration error (no project, token missing, bad path): restarting won't help.
+RestartPreventExitStatus=2
+StateDirectory=lal-mcp
+Environment=HOME=/var/lib/lal-mcp
+UMask=0077
+NoNewPrivileges=yes
+LimitNOFILE=65536
+# Optional: cap memory for very large projects (Libadalang keeps every parsed unit).
+#MemoryMax=8G
+
+# Extra sandboxing. Works on a normal host; inside a container, systemd may lack the
+# namespaces for these and the service then fails with status=226/NAMESPACE. Enable
+# them only after checking.
+#ProtectSystem=strict
+#ProtectHome=read-only
+#PrivateTmp=yes
+#PrivateDevices=yes
+#ProtectKernelTunables=yes
+#ProtectControlGroups=yes
+#RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

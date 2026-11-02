@@ -398,6 +398,10 @@ Safety: `run_lal` executes Python in the server, so treat the port like a shell.
 | `--port` | port (default `8765`) |
 | `--token-env NAME` | require a bearer token, read from env var `NAME` |
 
+To run it as a systemd service, or in a RHEL UBI 10 container, see
+[docs/linux-service.md](docs/linux-service.md). `GET /healthz` (no token) answers 200 once
+the project is loaded, for health checks.
+
 ## Claude
 
 For Claude Code, the equivalent is one user-level entry for all repositories,

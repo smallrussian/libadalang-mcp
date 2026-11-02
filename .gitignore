@@ -69,3 +69,6 @@ agent_debug/
 agent_debug.original/
 agent_debug_sandbox/
 agent_debug_sandbox2/
+
+# --- Deployment: local AdaCore archives / wheelhouse for deploy/install.sh ---
+deploy/vendor/

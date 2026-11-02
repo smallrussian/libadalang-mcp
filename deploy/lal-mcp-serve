@@ -1,0 +1,52 @@
+#!/bin/bash
+# Start lal-mcp in HTTP mode from environment variables.
+#
+# Used by the systemd unit (lal-mcp@.service reads /etc/lal-mcp/<instance>.env) and works
+# the same as a container's main process (podman run -e ...). See docs/linux-service.md.
+#
+#   LAL_MCP_WORKSPACE   repository root; the server runs there, so its .lal-mcp.toml is used (required)
+#   LAL_MCP_ARGS        extra server arguments, e.g. -P /ws/mission.gpr -XBUILD=debug
+#                       (split like a shell command line: quote a path with spaces)
+#   LAL_MCP_HOST        bind address (default 127.0.0.1; any other address needs a token)
+#   LAL_MCP_PORT        port (default 8765)
+#   LAL_MCP_TOKEN       bearer token clients must send, or
+#   LAL_MCP_TOKEN_FILE  a file holding it (e.g. a podman secret, /run/secrets/lal-mcp-token)
+#   GNATPRO_PREFIX      GNAT Pro + Libadalang install (default /opt/gnatpro/26.1)
+#   LAL_MCP_HOME        where install.sh put the server (default /opt/lal-mcp)
+set -euo pipefail
+
+: "${LAL_MCP_WORKSPACE:?set LAL_MCP_WORKSPACE to the repository root}"
+LAL_MCP_HOME="${LAL_MCP_HOME:-/opt/lal-mcp}"
+GNATPRO_PREFIX="${GNATPRO_PREFIX:-/opt/gnatpro/26.1}"
+
+if [ -n "${LAL_MCP_TOKEN_FILE:-}" ]; then
+    if [ ! -r "$LAL_MCP_TOKEN_FILE" ]; then
+        echo "lal-mcp-serve: LAL_MCP_TOKEN_FILE=$LAL_MCP_TOKEN_FILE is not readable by $(id -un)" >&2
+        exit 2
+    fi
+    LAL_MCP_TOKEN="$(<"$LAL_MCP_TOKEN_FILE")"
+    export LAL_MCP_TOKEN
+fi
+if [ ! -x "$GNATPRO_PREFIX/bin/gnat" ]; then
+    echo "lal-mcp-serve: no GNAT Pro at GNATPRO_PREFIX=$GNATPRO_PREFIX (bin/gnat missing)" >&2
+    exit 2
+fi
+if [ ! -d "$LAL_MCP_WORKSPACE" ]; then
+    echo "lal-mcp-serve: LAL_MCP_WORKSPACE=$LAL_MCP_WORKSPACE is not a directory (is it mounted?)" >&2
+    exit 2
+fi
+
+args=(--http --host "${LAL_MCP_HOST:-127.0.0.1}" --port "${LAL_MCP_PORT:-8765}")
+if [ -n "${LAL_MCP_TOKEN:-}" ]; then
+    args+=(--token-env LAL_MCP_TOKEN)
+fi
+# split like a shell command line (quotes allowed), but never run as shell code
+mapfile -t extra < <("$LAL_MCP_HOME/venv/bin/python" -c \
+    'import os, shlex; [print(a) for a in shlex.split(os.environ.get("LAL_MCP_ARGS", ""))]')
+
+# GPR finds the toolchain and the Ada runtime through PATH.
+export PATH="$GNATPRO_PREFIX/bin:/usr/local/bin:/usr/bin:/bin"
+export PYTHONPATH="$LAL_MCP_HOME/app"
+export PYTHONDONTWRITEBYTECODE=1
+cd "$LAL_MCP_WORKSPACE"
+exec "$LAL_MCP_HOME/venv/bin/python" -m lal_mcp "${args[@]}" "${extra[@]}"
