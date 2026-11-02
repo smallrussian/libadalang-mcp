@@ -113,6 +113,29 @@ def test_http_bearer_token():
         assert anyio.run(go)
 
 
+def _health(url: str) -> tuple[int, str]:
+    try:
+        with urllib.request.urlopen(url.replace("/mcp", "/healthz"), timeout=10) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode()
+
+
+def test_http_healthz_needs_no_token_and_reports_not_ready():
+    env = {"LAL_TEST_TOKEN": "s3cret"}
+    with http_server(["-P", FIXTURE_GPR, "--token-env", "LAL_TEST_TOKEN"], stub="no_lal", env_extra=env) as url:
+        code, body = _health(url)
+    assert code == 503 and '"project_loaded": false' in body
+    assert "fixture" not in body  # says nothing about the project
+
+
+@needs_lal
+def test_http_healthz_ok_when_project_loaded():
+    with http_server(["-P", FIXTURE_GPR]) as url:
+        code, body = _health(url)
+    assert code == 200 and body == '{"status": "ok", "project_loaded": true}'
+
+
 def _run_cli(args: list[str], cwd: str = ROOT, env_extra: dict | None = None) -> subprocess.CompletedProcess:
     env = server_env("no_lal")
     env.update(env_extra or {})

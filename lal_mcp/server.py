@@ -259,7 +259,7 @@ def main(argv: list[str] | None = None) -> None:
     except ToolFailure as exc:
         log.error("%s", exc)  # e.g. libadalang import failed; keep serving so tool calls report it
     token = os.environ.get(opts.token_env) if opts.token_env else None
-    anyio.run(serve, app, opts.host, opts.port, token, opts.log_level)
+    anyio.run(serve, app, opts.host, opts.port, token, opts.log_level, lambda: SESSION.loaded)
 
 
 if __name__ == "__main__":

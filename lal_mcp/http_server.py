@@ -51,13 +51,35 @@ class BearerAuth:
         await self.app(scope, receive, send)  # lifespan and authorized requests
 
 
-async def serve(app, host: str, port: int, token: str | None, log_level: str) -> None:
+class Health:
+    """ASGI middleware: `GET /healthz` answers without a token, for systemd/container health
+    checks. 200 when the project is loaded, 503 when it isn't (e.g. libadalang failed to import).
+    It says nothing else: no paths, no project name."""
+
+    def __init__(self, app, ready):
+        self.app = app
+        self.ready = ready
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/healthz":
+            ok = bool(self.ready())
+            body = json.dumps({"status": "ok" if ok else "not ready", "project_loaded": ok}).encode()
+            await send({"type": "http.response.start", "status": 200 if ok else 503,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        await self.app(scope, receive, send)
+
+
+async def serve(app, host: str, port: int, token: str | None, log_level: str, ready=lambda: True) -> None:
     import uvicorn
 
     asgi = app.streamable_http_app(host=host)  # the SDK adds DNS-rebinding protection on loopback
     if token:
         asgi = BearerAuth(asgi, token)
+    asgi = Health(asgi, ready)  # outside the token check
     uv_level = {"TRACE": "trace", "DEBUG": "info"}.get(log_level.upper(), log_level.lower())
     config = uvicorn.Config(asgi, host=host, port=port, log_level=uv_level, log_config=None)
-    log.info("listening on http://%s:%d/mcp%s", host, port, " (bearer token required)" if token else "")
+    log.info("listening on http://%s:%d/mcp%s; health check: /healthz", host, port,
+             " (bearer token required)" if token else "")
     await uvicorn.Server(config).serve()
