@@ -29,5 +29,8 @@ project = "mission.gpr"
 
 # Scenario variables: the -X VAR=VALUE you pass to gprbuild.
 # Values given with -X on the server's command line override these.
+# {workspace} in a value is replaced by the workspace root (forward slashes), so a
+# variable that points into the repository works in every clone, on Windows and Linux.
 [scenario]
 # BUILD = "debug"
+# BASE_DIR = "{workspace}"

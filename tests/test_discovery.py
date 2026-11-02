@@ -36,6 +36,25 @@ def test_config_file_relative_paths_and_cli_override(tmp_path):
     assert "server working directory" in r.source
 
 
+def test_workspace_placeholder_in_scenario(tmp_path):
+    """BASE_DIR = "{workspace}": the same committed file works in every clone (Windows, /ws)."""
+    for clone in ("win clone", "ws"):
+        root = tmp_path / clone
+        (root / "Build").mkdir(parents=True)
+        _proj(root / "Build", "app.gpr")
+        (root / ".lal-mcp.toml").write_text(
+            'project = "Build/app.gpr"\n[scenario]\nBASE_DIR = "{workspace}"\nSRC = "{workspace}/Code"\n'
+            'MODE = "plain"\n')
+        r = resolve(CliSettings(), [str(root)], str(tmp_path))
+        ws = os.path.abspath(str(root)).replace("\\", "/")
+        assert r.scenario == {"BASE_DIR": ws, "SRC": ws + "/Code", "MODE": "plain"}
+    # the workspace key moves it; -X still wins
+    (tmp_path / "ws" / ".lal-mcp.toml").write_text(
+        'project = "Build/app.gpr"\nworkspace = "Build"\n[scenario]\nBASE_DIR = "{workspace}"\nX = "{workspace}"\n')
+    r = resolve(CliSettings(scenario={"X": "cli"}), [str(tmp_path / "ws")], str(tmp_path))
+    assert r.scenario == {"BASE_DIR": os.path.abspath(str(tmp_path / "ws" / "Build")).replace("\\", "/"), "X": "cli"}
+
+
 def test_roots_preferred_over_cwd(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()

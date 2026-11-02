@@ -20,6 +20,7 @@ Config file (paths relative to the file's directory):
     timeout = 20                   # optional, run_lal seconds
     [scenario]                     # optional, -X variables
     BUILD = "debug"
+    BASE_DIR = "{workspace}"       # {workspace} = the workspace root, in every clone
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ KNOWN_KEYS = {"project", "workspace", "target", "runtime", "max_chars", "timeout
               "tests_project", "gnattest"}
 DEFAULT_MAX_CHARS = 8000
 DEFAULT_TIMEOUT = 20
+WORKSPACE_PLACEHOLDER = "{workspace}"
 
 
 class ConfigError(Exception):
@@ -130,11 +132,15 @@ def _from_file(path: str, cli: CliSettings, how: str) -> Resolved:
     project = os.path.normpath(os.path.join(base, data["project"]))
     if not os.path.isfile(project):
         raise ConfigError(f"{path}: project file not found: {project}")
-    workspace = cli.workspace or os.path.normpath(os.path.join(base, data.get("workspace", ".")))
+    workspace = os.path.abspath(cli.workspace or os.path.normpath(os.path.join(base, data.get("workspace", "."))))
     scenario = {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in data.get("scenario", {}).items()}
+    # {workspace} = the repository root this server serves, so one committed file works in
+    # every clone (BASE_DIR = "{workspace}"). Forward slashes: GPR accepts them everywhere.
+    ws = workspace.replace("\\", "/")
+    scenario = {k: v.replace(WORKSPACE_PLACEHOLDER, ws) for k, v in scenario.items()}
     scenario.update(cli.scenario)  # command line wins
     return Resolved(
-        project=project, workspace=os.path.abspath(workspace), scenario=scenario,
+        project=project, workspace=workspace, scenario=scenario,
         target=cli.target or data.get("target"), runtime=cli.runtime or data.get("runtime"),
         max_chars=cli.max_chars or data.get("max_chars", DEFAULT_MAX_CHARS),
         timeout=cli.timeout if cli.timeout is not None else data.get("timeout", DEFAULT_TIMEOUT),

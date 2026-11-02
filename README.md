@@ -128,7 +128,13 @@ project = "build/mission.gpr"   # required: your existing root project, used as 
 
 [scenario]                      # -X scenario variables
 BUILD = "debug"
+BASE_DIR = "{workspace}"        # {workspace} = the workspace root, wherever this clone is
 ```
+
+`{workspace}` in a scenario value is replaced by the workspace root, with forward
+slashes. A variable that points into the repository, such as a `BASE_DIR` your GPR files
+read with `external`, then works in every clone without per-machine arguments:
+`D:/src/mission` on a Windows checkout, `/ws` in a container.
 
 A commented copy is in [`docs/lal-mcp.example.toml`](docs/lal-mcp.example.toml).
 

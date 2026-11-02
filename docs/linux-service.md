@@ -107,15 +107,25 @@ podman run -d --name mission-ada \
   (`-p 127.0.0.1:8766:8765`). Or run several instances in one container: see
   [Several repositories in one container](#several-repositories-in-one-container).
 
-The service runs in the repository root, so it uses the repository's `.lal-mcp.toml`. If the
-repository has none, or its paths are for another machine (Windows drive letters, a
-different `BASE_DIR`), write the settings in an env file and mount it over the default
-one:
+The service runs in the repository root and takes the project from the repository's
+`.lal-mcp.toml`, so it needs no arguments (`LAL_MCP_ARGS` stays empty). Commit one at the
+repository root. Write a scenario variable that points into the repository with
+`{workspace}`, which becomes `/ws` here and your checkout's path on Windows:
+
+```toml
+# .lal-mcp.toml
+project = "Build/Projects/AppAdaOfp.gpr"
+[scenario]
+BASE_DIR = "{workspace}"
+COVERAGE_TYPE = "NONE"
+```
+
+To change the service's own settings (port, token file, workspace path), write an env file
+and mount it over the default one:
 
 ```bash
 cat > mission.env <<'EOF'
 LAL_MCP_WORKSPACE=/ws
-LAL_MCP_ARGS=-P /ws/Build/Projects/Master_Dev.gpr -XBASE_DIR=/ws -XCOVERAGE_TYPE=NONE
 LAL_MCP_HOST=0.0.0.0
 LAL_MCP_PORT=8765
 LAL_MCP_TOKEN_FILE=/run/secrets/lal-mcp-token
@@ -248,7 +258,7 @@ Set these in `/etc/lal-mcp/<name>.env`: one `VAR=value` per line, no `export`.
 | variable | meaning |
 | --- | --- |
 | `LAL_MCP_WORKSPACE` | repository root (required). The server runs there and uses its `.lal-mcp.toml`; answers give paths relative to it |
-| `LAL_MCP_ARGS` | extra server arguments, split like a shell command line. For a path with spaces, wrap the whole value in double quotes and the path in single quotes: `LAL_MCP_ARGS="-P '/srv/my repo/x.gpr'"`. Arguments: `-P /ws/x.gpr`, `-XVAR=value`, `--target`, `--RTS`, `--max-chars`, `--timeout`, `--tests-project`, `--log-level DEBUG` (see the README) |
+| `LAL_MCP_ARGS` | normally empty: the project comes from the repository's `.lal-mcp.toml`. Extra server arguments, split like a shell command line, override it. For a path with spaces, wrap the whole value in double quotes and the path in single quotes: `LAL_MCP_ARGS="-P '/srv/my repo/x.gpr'"`. Arguments: `-P /ws/x.gpr`, `-XVAR=value`, `--target`, `--RTS`, `--max-chars`, `--timeout`, `--tests-project`, `--log-level DEBUG` (see the README) |
 | `LAL_MCP_HOST` | bind address. `127.0.0.1` (default) is local only; any other address requires a token |
 | `LAL_MCP_PORT` | port (default `8765`) |
 | `LAL_MCP_TOKEN` | the bearer token, or |
@@ -328,7 +338,8 @@ The image works with Docker too, with two differences:
 | build fails: `no Libadalang wheel under ...` | Libadalang is in another prefix: add `--libadalang-prefix` |
 | build fails: `... is older than 3.11` | the image's `python3` is too old: pass `--python python3.12` (or newer) |
 | build fails at `git clone` | no network to GitHub: clone from your internal mirror |
-| `journalctl` shows `status=2` and `not configured` | no `.lal-mcp.toml` in `LAL_MCP_WORKSPACE`, and no `-P` in `LAL_MCP_ARGS` |
+| `journalctl` shows `status=2` and `not configured` | no `.lal-mcp.toml` at the root of the mounted repository (`LAL_MCP_WORKSPACE`). Commit one |
+| `undefined external reference "BASE_DIR"` (or another variable) | the GPR files read a scenario variable that `.lal-mcp.toml` doesn't set: add it under `[scenario]`, e.g. `BASE_DIR = "{workspace}"` |
 | `status=2`, `--host ... add --token-env` | non-local `LAL_MCP_HOST` without a token. Set `LAL_MCP_TOKEN` or `LAL_MCP_TOKEN_FILE` |
 | `LAL_MCP_TOKEN_FILE ... is not readable` | the secret isn't readable by uid 990: add `uid=990,gid=990,mode=0400` to `--secret` |
 | `LAL_MCP_WORKSPACE ... is not a directory` | the repository isn't mounted at that path |
