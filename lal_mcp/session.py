@@ -223,6 +223,10 @@ class Session:
                 scenario_vars=dict(self.cfg.scenario),
                 target=self.cfg.target,
                 runtime=self.cfg.runtime,
+                # Ada only: we never read other languages, and their sources/toolchains
+                # (e.g. "no sources of language C", which shows up on Linux) must not
+                # stop or clutter the load.
+                ada_only=True,
                 print_errors=False,
             )
         except Exception as exc:

@@ -192,3 +192,18 @@ def test_test_model_includes_documentation_as_specification(s):
     assert "  | Two overloads: name resolution must pick the right one." in text
     text, _ = test_model(s, "src/vehicle.1.ada", 17, 0)  # Distance: no comment
     assert "documentation: none on the declaration" in text
+
+
+def test_project_listing_other_languages_loads_as_ada_only(tmp_path):
+    """Languages ("Ada", "C") with no C sources: no "no sources of language C" message."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "csrc").mkdir()
+    (tmp_path / "src" / "p.ads").write_text("package P is\n   X : Integer := 1;\nend P;\n")
+    (tmp_path / "mixed.gpr").write_text(
+        'project Mixed is\n   for Languages use ("Ada", "C");\n'
+        '   for Source_Dirs use ("src", "csrc");\n   for Object_Dir use "obj";\nend Mixed;\n')
+    sess = Session(Config(project=str(tmp_path / "mixed.gpr"), workspace=str(tmp_path)))
+    sess.ensure_loaded()
+    assert not any('language "C"' in e for e in sess.project_errors), sess.project_errors
+    text, err = units.find_unit(sess, "P")
+    assert not err and "src/p.ads" in text
